@@ -26,6 +26,8 @@ model File {
   url      String
   key      String
   messages Message[]
+  images   ExtractedImage[]
+  chapters Chapter[]
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -42,3 +44,72 @@ model Message {
   File      File?    @relation(fields: [fileId], references: [id])
   fileId    String?
 }
+
+model ExtractedImage {
+  id             String   @id @default(cuid())
+  fileId         String
+  pageNumber     Int
+  imageUrl       String
+  imageKey       String   // UploadThing key for deletion
+  
+  // Context
+  caption        String?  @db.Text()
+  contextBefore  String   @db.Text()
+  contextAfter   String   @db.Text()
+  nearbyText     String   @db.Text() // Combined surrounding text
+  
+  // Position on page
+  x              Float?
+  y              Float?
+  width          Float?
+  height         Float?
+  
+  // Metadata
+  imageType      String?  // diagram, chart, photo, etc.
+  topics         String[] // Related topics for better search
+  
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  
+  // Relations
+  file           File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  
+  @@index([fileId, pageNumber])
+}
+
+model Chapter {
+  id            String   @id @default(cuid())
+  fileId        String
+  chapterNumber Int
+  title         String
+  content       String   @db.Text()
+  startPage     Int
+  endPage       Int
+  topics        Topic[]
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  file          File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  
+  @@unique([fileId, chapterNumber])
+  @@index([fileId])
+}
+
+model Topic {
+  id            String   @id @default(cuid())
+  chapterId     String
+  topicNumber   Int
+  title         String
+  content       String   @db.Text()
+  estimatedTime Int      // in minutes
+  
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  
+  chapter       Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  
+  @@unique([chapterId, topicNumber])
+  @@index([chapterId])
+}
+

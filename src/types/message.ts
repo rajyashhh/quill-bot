@@ -9,6 +9,13 @@ type OmitText = Omit<Messages[number], 'text'>
 
 type ExtendedText = {
   text: string | JSX.Element
+  images?: Array<{
+    id: string
+    imageUrl: string
+    caption?: string | null
+    pageNumber: number
+    imageType?: string | null
+  }>
 }
 
 export type ExtendedMessage = OmitText & ExtendedText

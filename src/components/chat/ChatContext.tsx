@@ -61,7 +61,11 @@ export const ChatContextProvider = ({
         throw new Error('Failed to send message')
       }
 
-      return response.body
+      // Extract images data from header
+      const imagesData = response.headers.get('X-Images-Data')
+      const images = imagesData ? JSON.parse(imagesData) : []
+
+      return { body: response.body, images }
     },
     onMutate: async ({ message }) => {
       backupMessage.current = message
@@ -117,10 +121,10 @@ export const ChatContextProvider = ({
           ) ?? [],
       }
     },
-    onSuccess: async (stream) => {
+    onSuccess: async (result) => {
       setIsLoading(false)
 
-      if (!stream) {
+      if (!result || !result.body) {
         return toast({
           title: 'There was a problem sending this message',
           description:
@@ -129,6 +133,7 @@ export const ChatContextProvider = ({
         })
       }
 
+      const { body: stream, images } = result
       const reader = stream.getReader()
       const decoder = new TextDecoder()
       let done = false
@@ -168,6 +173,7 @@ export const ChatContextProvider = ({
                       id: 'ai-response',
                       text: accResponse,
                       isUserMessage: false,
+                      images: images,
                     },
                     ...page.messages,
                   ]

@@ -75,33 +75,40 @@ const Dashboard = () => {
                   </div>
                 </Link>
 
-                <div className='px-6 mt-4 grid grid-cols-3 place-items-center py-2 gap-6 text-xs text-zinc-500'>
-                  <div className='flex items-center gap-2'>
-                    <Plus className='h-4 w-4' />
-                    {format(
-                      new Date(file.createdAt),
-                      'MMM yyyy'
-                    )}
+                <div className='px-6 mt-4 py-2 space-y-2'>
+                  <Link href={`/dashboard/${file.id}`}>
+                    <Button
+                      size='sm'
+                      variant='outline'
+                      className='w-full'>
+                      <MessageSquare className='h-4 w-4 mr-2' />
+                      Open Chat
+                    </Button>
+                  </Link>
+                  
+                  <div className='flex items-center justify-between text-xs text-zinc-500'>
+                    <div className='flex items-center gap-2'>
+                      <Plus className='h-4 w-4' />
+                      {format(
+                        new Date(file.createdAt),
+                        'MMM yyyy'
+                      )}
+                    </div>
+                    
+                    <Button
+                      onClick={() =>
+                        deleteFile({ id: file.id })
+                      }
+                      size='sm'
+                      variant='ghost'
+                      className='h-8 w-8 p-0'>
+                      {currentlyDeletingFile === file.id ? (
+                        <Loader2 className='h-4 w-4 animate-spin' />
+                      ) : (
+                        <Trash className='h-4 w-4' />
+                      )}
+                    </Button>
                   </div>
-
-                  <div className='flex items-center gap-2'>
-                    <MessageSquare className='h-4 w-4' />
-                    mocked
-                  </div>
-
-                  <Button
-                    onClick={() =>
-                      deleteFile({ id: file.id })
-                    }
-                    size='sm'
-                    className='w-full'
-                    variant='destructive'>
-                    {currentlyDeletingFile === file.id ? (
-                      <Loader2 className='h-4 w-4 animate-spin' />
-                    ) : (
-                      <Trash className='h-4 w-4' />
-                    )}
-                  </Button>
                 </div>
               </li>
             ))}

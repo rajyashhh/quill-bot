@@ -3,10 +3,11 @@ import { ExtendedMessage } from '@/types/message'
 import { Icons } from '../Icons'
 import ReactMarkdown from 'react-markdown'
 import { format } from 'date-fns'
-import { forwardRef } from 'react'
+import { forwardRef, useState } from 'react'
 import { useTextToSpeech } from '@/hooks/useTextToSpeech'
 import { Button } from '../ui/button'
-import { Volume2, VolumeX } from 'lucide-react'
+import { Volume2, VolumeX, ZoomIn } from 'lucide-react'
+import Image from 'next/image'
 
 interface MessageProps {
   message: ExtendedMessage
@@ -83,6 +84,44 @@ const Message = forwardRef<HTMLDivElement, MessageProps>(
             ) : (
               message.text
             )}
+            
+            {/* Display images if available */}
+            {message.images && message.images.length > 0 && (
+              <div className="mt-3 space-y-2">
+                {message.images.map((image) => (
+                  <div key={image.id} className="relative">
+                    <figure className="relative group">
+                      <div className="relative overflow-hidden rounded-md bg-gray-100">
+                        <Image
+                          src={image.imageUrl}
+                          alt={image.caption || `Image from page ${image.pageNumber}`}
+                          width={400}
+                          height={300}
+                          className="object-contain w-full h-auto"
+                          loading="lazy"
+                        />
+                        <button
+                          onClick={() => window.open(image.imageUrl, '_blank')}
+                          className="absolute top-2 right-2 p-2 bg-black/50 rounded-md opacity-0 group-hover:opacity-100 transition-opacity"
+                          title="View full size"
+                        >
+                          <ZoomIn className="h-4 w-4 text-white" />
+                        </button>
+                      </div>
+                      {image.caption && (
+                        <figcaption className="mt-1 text-xs text-gray-600 italic">
+                          {image.caption}
+                        </figcaption>
+                      )}
+                      <div className="text-xs text-gray-500 mt-1">
+                        Page {image.pageNumber} • {image.imageType || 'Image'}
+                      </div>
+                    </figure>
+                  </div>
+                ))}
+              </div>
+            )}
+            
             {message.id !== 'loading-message' ? (
               <div
                 className={cn(

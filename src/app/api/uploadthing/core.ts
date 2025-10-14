@@ -1,11 +1,17 @@
 import { db } from '@/db'
+import type { ExtractedImage } from '@prisma/client'
 import { getPineconeClient } from '@/lib/pinecone'
 import { extractTextWithOCR, shouldUseOCR } from '@/lib/pdf-ocr'
+import { extractImagesFromPDF } from '@/lib/pdf-image-extractor-cloudinary'
 import { OpenAIEmbeddings } from 'langchain/embeddings/openai'
 import { RecursiveCharacterTextSplitter } from 'langchain/text_splitter'
+import { ChapterAwarePineconeIndexer } from '@/lib/chapter-aware-pinecone'
+import { ChapterExtractor } from '@/lib/chapter-extractor'
 import { createUploadthing, type FileRouter } from 'uploadthing/next'
+import { UTApi } from 'uploadthing/server'
 
 const f = createUploadthing()
+const utapi = new UTApi()
 
 const middleware = async () => {
   // No authentication needed - anyone can upload
@@ -94,10 +100,106 @@ const onUploadComplete = async ({
       throw new Error('Failed to parse PDF content')
     }
     
-    // Create documents from the parsed text
-    // Split by page breaks if present, otherwise treat as single document
-    const pageTexts = extractedText.split(/\f/).filter((text: string) => text.trim().length > 0)
-    console.log('[PDF_PROCESSING] Split into', pageTexts.length, 'sections')
+    // Extract images from PDF
+    console.log('[PDF_PROCESSING] Extracting images from PDF...')
+    const extractedImages = await extractImagesFromPDF(buffer)
+    console.log('[PDF_PROCESSING] Found', extractedImages.length, 'images')
+    
+    // Upload extracted images to UploadThing
+    const uploadedImages: ExtractedImage[] = []
+    for (let i = 0; i < extractedImages.length; i++) {
+      const image = extractedImages[i]
+      console.log(`[PDF_PROCESSING] Uploading image ${i + 1}/${extractedImages.length} from page ${image.pageNumber}`)
+      
+      try {
+        // Convert buffer to File object with proper name for upload
+        const file = new File([image.imageBuffer], `page-${image.pageNumber}-image-${i + 1}.png`, { type: 'image/png' })
+        const uploadedFile = await utapi.uploadFiles(file)
+        
+        if (uploadedFile && 'data' in uploadedFile && uploadedFile.data) {
+          // Store image metadata in database
+          const dbImage = await db.extractedImage.create({
+            data: {
+              fileId: createdFile.id,
+              pageNumber: image.pageNumber,
+              imageUrl: uploadedFile.data.url,
+              imageKey: uploadedFile.data.key,
+              caption: image.caption || '',
+              contextBefore: image.contextBefore,
+              contextAfter: image.contextAfter,
+              nearbyText: image.nearbyText,
+              x: image.boundingBox?.x,
+              y: image.boundingBox?.y,
+              width: image.boundingBox?.width,
+              height: image.boundingBox?.height,
+              imageType: image.imageType,
+              topics: image.topics,
+            }
+          })
+          
+          uploadedImages.push(dbImage)
+          console.log(`[PDF_PROCESSING] Stored image ${i + 1} with ID: ${dbImage.id}`)
+        }
+      } catch (imageError) {
+        console.error(`[PDF_PROCESSING] Error uploading image ${i + 1}:`, imageError)
+        // Continue with other images even if one fails
+      }
+    }
+    
+    console.log('[PDF_PROCESSING] Successfully uploaded and stored', uploadedImages.length, 'images')
+    
+    // Use chapter-aware indexing
+    const USE_CHAPTER_AWARE_INDEXING = true // Enable to detect chapters from TOC
+    
+    if (USE_CHAPTER_AWARE_INDEXING) {
+      console.log('[PDF_PROCESSING] Using chapter-aware indexing...')
+      const chapterIndexer = new ChapterAwarePineconeIndexer()
+      const { chapters, vectors } = await chapterIndexer.indexPDFWithChapters(
+        createdFile.id,
+        buffer,
+        1000, // chunk size
+        200   // chunk overlap
+      )
+      
+      // Save chapters to database
+      // First, delete any existing chapters for this file
+      await db.chapter.deleteMany({
+        where: { fileId: createdFile.id }
+      })
+      
+      for (const chapter of chapters) {
+        const extractor = new ChapterExtractor()
+        const chapterContent = extractor.extractChapterContent(extractedText, chapter)
+        const topics = extractor.identifyTopics(chapterContent)
+        
+        await db.chapter.create({
+          data: {
+            fileId: createdFile.id,
+            chapterNumber: chapter.chapterNumber,
+            title: chapter.title,
+            content: chapterContent,
+            startPage: chapter.startPage,
+            endPage: chapter.endPage,
+            topics: {
+              create: topics.map((topic: any) => ({
+                topicNumber: topic.topicNumber,
+                title: topic.title,
+                content: topic.content,
+                estimatedTime: topic.estimatedTime
+              }))
+            }
+          }
+        })
+      }
+      
+      console.log(`[PDF_PROCESSING] Indexed ${vectors} vectors with chapter awareness`)
+      console.log(`[PDF_PROCESSING] Saved ${chapters.length} chapters to database`)
+    } else {
+      // Original implementation
+      // Create documents from the parsed text
+      // Split by page breaks if present, otherwise treat as single document
+      const pageTexts = extractedText.split(/\f/).filter((text: string) => text.trim().length > 0)
+      console.log('[PDF_PROCESSING] Split into', pageTexts.length, 'sections')
     
     const pageLevelDocs = pageTexts.map((text: string, index: number) => ({
       pageContent: text,
@@ -190,16 +292,44 @@ const onUploadComplete = async ({
       const embeddingsArray = await embeddings.embedDocuments(texts)
       
       // Prepare vectors for Pinecone
-      const batchVectors = batch.map((doc, idx) => ({
-        id: `${createdFile.id}-${i + idx}`,
-        values: embeddingsArray[idx],
-        metadata: {
-          text: doc.pageContent.substring(0, 1000), // Limit metadata size
-          pageNumber: doc.metadata.pageNumber, // Use the preserved page number
-          fileId: createdFile.id,
-          chunkIndex: i + idx,
-        },
-      }))
+      const batchVectors = batch.map((doc, idx) => {
+        // Find images on the same page as this chunk
+        const pageImages = uploadedImages.filter(img => img.pageNumber === doc.metadata.pageNumber)
+        
+        // Check if chunk text references any images (e.g., "Figure 1", "as shown in the diagram")
+        const referencedImageIds = []
+        const chunkLower = doc.pageContent.toLowerCase()
+        
+        for (const img of pageImages) {
+          // Check if chunk mentions the image caption or common references
+          if (img.caption && chunkLower.includes(img.caption.toLowerCase())) {
+            referencedImageIds.push(img.id)
+          } else if (
+            chunkLower.includes('figure') || 
+            chunkLower.includes('diagram') || 
+            chunkLower.includes('chart') ||
+            chunkLower.includes('table') ||
+            chunkLower.includes('image')
+          ) {
+            // If generic image reference found and image is on same page, include it
+            referencedImageIds.push(img.id)
+          }
+        }
+        
+        return {
+          id: `${createdFile.id}-${i + idx}`,
+          values: embeddingsArray[idx],
+          metadata: {
+            text: doc.pageContent.substring(0, 1000), // Limit metadata size
+            pageNumber: doc.metadata.pageNumber, // Use the preserved page number
+            fileId: createdFile.id,
+            chunkIndex: i + idx,
+            hasImages: pageImages.length > 0,
+            imageIds: pageImages.map(img => img.id),
+            referencedImageIds: [...new Set(referencedImageIds)], // Remove duplicates
+          },
+        }
+      })
       
       vectors.push(...batchVectors)
     }
@@ -228,6 +358,7 @@ const onUploadComplete = async ({
     }
     
     console.log('[PDF_PROCESSING] Successfully stored in Pinecone')
+    }
 
     await db.file.update({
       data: {

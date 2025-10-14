@@ -21,6 +21,19 @@ export const POST = async (req: NextRequest) => {
       id: fileId,
     },
   })
+  
+  // Fetch chapters separately to avoid TypeScript errors
+  const chapters = await db.chapter.findMany({
+    where: {
+      fileId: fileId,
+    },
+    include: {
+      topics: true
+    },
+    orderBy: {
+      chapterNumber: 'asc'
+    }
+  })
 
   if (!file)
     return new Response('Not found', { status: 404 })
@@ -32,6 +45,35 @@ export const POST = async (req: NextRequest) => {
       fileId,
     },
   })
+
+  // Check if the query is asking about chapters/topics
+  const isChapterQuery = /chapter|topic|section|unit|module/i.test(message)
+  const chapterNumberMatch = message.match(/chapter\s*(\d+)/i)
+  
+  let chapterInfo = ''
+  if (isChapterQuery && chapters.length > 0) {
+    if (chapterNumberMatch) {
+      // User is asking about a specific chapter
+      const chapterNum = parseInt(chapterNumberMatch[1])
+      const chapter = chapters.find((ch: { chapterNumber: number }) => ch.chapterNumber === chapterNum)
+      if (chapter) {
+        chapterInfo = `\n\nChapter ${chapter.chapterNumber}: ${chapter.title}\n`
+        chapterInfo += `Pages: ${chapter.startPage}-${chapter.endPage}\n`
+        if (chapter.topics.length > 0) {
+          chapterInfo += `\nTopics in this chapter:\n`
+          chapter.topics.forEach((topic: { topicNumber: any; title: any; estimatedTime: any }) => {
+            chapterInfo += `- Topic ${topic.topicNumber}: ${topic.title} (Est. ${topic.estimatedTime} mins)\n`
+          })
+        }
+      }
+    } else {
+      // User is asking about chapters in general
+      chapterInfo = `\n\nAvailable Chapters:\n`
+      chapters.forEach((chapter: { chapterNumber: any; title: any; startPage: any; endPage: any }) => {
+        chapterInfo += `- Chapter ${chapter.chapterNumber}: ${chapter.title} (Pages ${chapter.startPage}-${chapter.endPage})\n`
+      })
+    }
+  }
 
   // 1: vectorize message
   const embeddings = new OpenAIEmbeddings({
@@ -57,16 +99,52 @@ export const POST = async (req: NextRequest) => {
 
   console.log('[CHAT] Query response:', JSON.stringify(queryResponse, null, 2))
 
-  // Extract the text content from the results with page numbers
+  // Extract the text content from the results with page numbers and image references
   const results = queryResponse.matches?.map((match) => ({
     pageContent: match.metadata?.text || '',
     metadata: {
       pageNumber: match.metadata?.pageNumber,
       score: match.score,
+      imageIds: match.metadata?.imageIds || [],
+      referencedImageIds: match.metadata?.referencedImageIds || [],
+      hasImages: match.metadata?.hasImages || false,
     },
   })) || []
 
   console.log('[CHAT] Extracted results:', results.length, 'documents')
+  
+  // Collect all unique image IDs from the results
+  const allImageIds = new Set<string>()
+  results.forEach(result => {
+    if (result.metadata.imageIds && Array.isArray(result.metadata.imageIds)) {
+      result.metadata.imageIds.forEach((id: string) => allImageIds.add(id))
+    }
+    if (result.metadata.referencedImageIds && Array.isArray(result.metadata.referencedImageIds)) {
+      result.metadata.referencedImageIds.forEach((id: string) => allImageIds.add(id))
+    }
+  })
+  
+  // Fetch image data if any images are referenced
+  let images: any[] = []
+  if (allImageIds.size > 0) {
+    console.log('[CHAT] Fetching', allImageIds.size, 'images')
+    images = await db.extractedImage.findMany({
+      where: {
+        id: {
+          in: Array.from(allImageIds)
+        }
+      },
+      select: {
+        id: true,
+        imageUrl: true,
+        caption: true,
+        pageNumber: true,
+        imageType: true,
+        topics: true,
+      }
+    })
+    console.log('[CHAT] Found', images.length, 'images')
+  }
   
   // Format context with page numbers
   const contextWithPages = results.map((r) => {
@@ -102,7 +180,7 @@ export const POST = async (req: NextRequest) => {
       {
         role: 'system',
         content:
-          'You are a helpful AI assistant that answers questions based on the provided PDF context. Always cite the page numbers where you found the information. Use the following pieces of context to answer the users question accurately and comprehensively. Format your response in markdown when appropriate.',
+          'You are a helpful AI assistant that answers questions based on the provided PDF context. Always cite the page numbers where you found the information. When relevant images are available, reference them in your answer (e.g., "As shown in Figure 3.1 on page 45..."). When chapter information is provided, use it to give structured answers about the document organization. Use the following pieces of context to answer the users question accurately and comprehensively. Format your response in markdown when appropriate. Paraphrase the content naturally while maintaining technical accuracy.',
       },
       {
         role: 'user',
@@ -119,8 +197,16 @@ export const POST = async (req: NextRequest) => {
   
   \n----------------\n
   
+  ${chapterInfo ? `CHAPTER INFORMATION:${chapterInfo}\n----------------\n` : ''}
+  
   CONTEXT WITH PAGE NUMBERS:
   ${contextWithPages}
+  
+  ${images.length > 0 ? `RELEVANT IMAGES:
+  ${images.map(img => `- ${img.caption || `Image on page ${img.pageNumber}`} (Page ${img.pageNumber}, Type: ${img.imageType || 'diagram'})`).join('\n')}
+  
+  Note: The actual images will be displayed to the user alongside your response. Reference them naturally in your answer when relevant.
+  ` : ''}
   
   USER INPUT: ${message}`,
       },
@@ -158,7 +244,13 @@ export const POST = async (req: NextRequest) => {
     },
   })
 
-  return new StreamingTextResponse(stream)
+  // Return both the stream and images data
+  return new Response(stream, {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'X-Images-Data': JSON.stringify(images), // Send images data in header
+    },
+  })
   } catch (error) {
     console.error('[MESSAGE_ERROR]', error)
     return new Response('Internal error', { status: 500 })
