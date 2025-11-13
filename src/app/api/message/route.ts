@@ -108,10 +108,32 @@ export const POST = async (req: NextRequest) => {
       imageIds: match.metadata?.imageIds || [],
       referencedImageIds: match.metadata?.referencedImageIds || [],
       hasImages: match.metadata?.hasImages || false,
+      source: match.metadata?.source, // Track if this is OCR content
     },
   })) || []
 
   console.log('[CHAT] Extracted results:', results.length, 'documents')
+  
+  // Check if we got any OCR results from Pinecone
+  const ocrResults = results.filter(r => r.metadata.source === 'OCR')
+  const hasOcrResults = ocrResults.length > 0
+  const hasGoodOcrContent = ocrResults.some(r => r.pageContent.length > 50)
+  
+  console.log('[CHAT] OCR results from Pinecone:', ocrResults.length)
+  console.log('[CHAT] Has good OCR content:', hasGoodOcrContent)
+  
+  // If file used OCR but we have poor/no results, add full OCR text as fallback
+  let ocrContext = ''
+  if (file.usedOCR && file.ocrText) {
+    if (!hasOcrResults || !hasGoodOcrContent) {
+      console.log('[CHAT] Adding full OCR text from database (', file.ocrText.length, 'chars)')
+      // Use more of the OCR text if we have no good results at all
+      const maxLength = hasOcrResults ? 3000 : 8000
+      ocrContext = `\n\n---------------- OCR EXTRACTED TEXT ----------------\n${file.ocrText.substring(0, maxLength)}\n`
+    } else {
+      console.log('[CHAT] Using OCR results from Pinecone')
+    }
+  }
   
   // Collect all unique image IDs from the results
   const allImageIds = new Set<string>()
@@ -147,10 +169,13 @@ export const POST = async (req: NextRequest) => {
   }
   
   // Format context with page numbers
-  const contextWithPages = results.map((r) => {
-    const pageNum = r.metadata.pageNumber ? `[Page ${r.metadata.pageNumber}]` : '[Page unknown]'
-    return `${pageNum} ${r.pageContent}`
-  }).join('\n\n')
+  const contextWithPages = results
+    .filter(r => r.pageContent.trim().length > 0) // Filter out empty content
+    .map((r) => {
+      const pageNum = r.metadata.pageNumber ? `[Page ${r.metadata.pageNumber}]` : '[Page unknown]'
+      const sourceTag = r.metadata.source === 'OCR' ? ' [OCR]' : ''
+      return `${pageNum}${sourceTag} ${r.pageContent}`
+    }).join('\n\n')
 
   const prevMessages = await db.message.findMany({
     where: {
@@ -174,7 +199,7 @@ export const POST = async (req: NextRequest) => {
   })
 
   const response = await openai.chat.completions.create({
-    model: process.env.OPENAI_MODEL || 'gpt-5-2025-08-07',
+    model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
     stream: true,
     messages: [
       {
@@ -184,7 +209,7 @@ export const POST = async (req: NextRequest) => {
       },
       {
         role: 'user',
-        content: `Answer the following question based on the provided context. Each piece of context is prefixed with its page number in square brackets like [Page 123]. When you use information from the context, ALWAYS cite the page number(s) where you found it. If the answer cannot be found in the context, say "I cannot find information about that in the provided PDF."
+        content: `Answer the following question based on the provided context. Each piece of context is prefixed with its page number in square brackets like [Page 123]. Some context may be marked as [OCR], which means it was extracted using Optical Character Recognition from scanned pages. When you use information from the context, ALWAYS cite the page number(s) where you found it. If the answer cannot be found in the context, say "I cannot find information about that in the provided PDF."
         
   \n----------------\n
   
@@ -201,6 +226,7 @@ export const POST = async (req: NextRequest) => {
   
   CONTEXT WITH PAGE NUMBERS:
   ${contextWithPages}
+  ${ocrContext}
   
   ${images.length > 0 ? `RELEVANT IMAGES:
   ${images.map(img => `- ${img.caption || `Image on page ${img.pageNumber}`} (Page ${img.pageNumber}, Type: ${img.imageType || 'diagram'})`).join('\n')}
