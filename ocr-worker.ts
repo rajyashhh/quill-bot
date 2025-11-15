@@ -1,110 +1,105 @@
 import fs from "fs";
 import path from "path";
 import { fromBuffer } from "pdf2pic";
-import { createWorker, PSM } from "tesseract.js";
-import { db } from "./src/db/index.ts"; 
-import { getPineconeClient } from "./src/lib/pinecone.ts"; 
+import vision from "@google-cloud/vision";
+
+import { db } from "./src/db/index.ts";
+import { getPineconeClient } from "./src/lib/pinecone.ts";
 import { OpenAIEmbeddings } from "langchain/embeddings/openai";
 import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 
 async function extractTextWithOCR(pdfPath: string, fileId: string): Promise<string> {
   console.log(`[OCR-WORKER] 🔍 Starting OCR for ${pdfPath}`);
-  
+
   await db.file.update({
     where: { id: fileId },
-    data: { 
+    data: {
       uploadStatus: "PROCESSING",
       ocrStartedAt: new Date(),
       usedOCR: true,
       isScanned: true
     }
   });
-  
+
   const pdfBuffer = fs.readFileSync(pdfPath);
 
   const tempDir = path.resolve(process.cwd(), "temp");
   if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
 
-  // IMPROVED: Higher resolution and better quality
   const convert = fromBuffer(pdfBuffer, {
-    density: 300,  // Increased from 150
+    density: 300,
     format: "png",
     saveFilename: "page",
     savePath: tempDir,
-    width: 2400,   // Doubled
-    height: 3200,  // Doubled
-    quality: 100,  // Max quality
+    width: 2400,
+    height: 3200,
+    quality: 100,
   });
 
   const pages = await convert.bulk(-1);
   console.log(`[OCR-WORKER] Found ${pages.length} pages.`);
-  
+
   await db.file.update({
     where: { id: fileId },
     data: { totalPages: pages.length }
   });
 
-  // IMPROVED: Better Tesseract configuration
-  const worker = await createWorker("eng", 1, {
-    logger: m => console.log(`[TESSERACT] ${m.status}: ${m.progress}`)
-  });
-  
-  // Configure Tesseract for better accuracy
-  await worker.setParameters({
-    tessedit_pageseg_mode: PSM.AUTO,
-    preserve_interword_spaces: '1',
-    tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789 .,;:!?-()[]{}/%$@&*+=<>"\'\n',
-  });
-  
+  // Initialize Google Cloud Vision Client
+  const visionClient = new vision.ImageAnnotatorClient();
+
   let fullText = "";
-  let pageTexts = [];
+  let pageTexts: Array<{ page: number; text: string; quality: string }> = [];
 
   for (const [i, page] of pages.entries()) {
     console.log(`[OCR-WORKER] Processing page ${i + 1}/${pages.length}`);
-    
+
     try {
-      const result = await worker.recognize(page.path);
-      const pageText = result.data.text.trim();
-      
-      // Check if the OCR result looks reasonable
+      const [result] = await visionClient.textDetection(page.path);
+      const pageText = result.fullTextAnnotation?.text?.trim() || "";
+
       const hasLetters = /[a-zA-Z]/.test(pageText);
-      const specialCharRatio = (pageText.match(/[^a-zA-Z0-9\s.,;:!?()\-]/g) || []).length / pageText.length;
-      
+      const specialCharRatio =
+        (pageText.match(/[^a-zA-Z0-9\s.,;:!?()\-]/g) || []).length /
+        Math.max(pageText.length, 1);
+
       if (hasLetters && specialCharRatio < 0.5) {
-        // OCR looks good
         fullText += `\n\n--- Page ${i + 1} ---\n${pageText}`;
-        pageTexts.push({ page: i + 1, text: pageText, quality: 'good' });
-        console.log(`[OCR-WORKER] ✓ Page ${i + 1}: ${pageText.length} chars (good quality)`);
+        pageTexts.push({ page: i + 1, text: pageText, quality: "good" });
+
+        console.log(
+          `[OCR-WORKER] ✓ Page ${i + 1}: ${pageText.length} chars (good quality)`
+        );
       } else {
-        // Poor quality OCR
-        console.log(`[OCR-WORKER] ⚠ Page ${i + 1}: Low quality OCR (${specialCharRatio.toFixed(2)} special char ratio)`);
+        console.log(
+          `[OCR-WORKER] ⚠ Page ${i + 1}: Low quality OCR (${specialCharRatio.toFixed(2)} ratio)`
+        );
+
         fullText += `\n\n--- Page ${i + 1} ---\n[Page content could not be reliably extracted]`;
-        pageTexts.push({ page: i + 1, text: '', quality: 'poor' });
+        pageTexts.push({ page: i + 1, text: "", quality: "poor" });
       }
     } catch (error) {
       console.error(`[OCR-WORKER] Error on page ${i + 1}:`, error);
       fullText += `\n\n--- Page ${i + 1} ---\n[OCR error]`;
     }
-    
+
     const progress = Math.round(((i + 1) / pages.length) * 100);
     await db.file.update({
       where: { id: fileId },
-      data: { 
+      data: {
         ocrProgress: progress,
         processedPages: i + 1
       }
     });
   }
 
-  await worker.terminate();
   console.log("[OCR-WORKER] ✅ OCR complete.");
-  
-  // Log quality stats
-  const goodPages = pageTexts.filter(p => p.quality === 'good').length;
+
+  const goodPages = pageTexts.filter(p => p.quality === "good").length;
   console.log(`[OCR-WORKER] Quality: ${goodPages}/${pages.length} pages readable`);
 
   const outputPath = pdfPath.replace(/\.pdf$/, "_ocr.txt");
   fs.writeFileSync(outputPath, fullText, "utf8");
+
   console.log(`[OCR-WORKER] 📝 Saved text to ${outputPath}`);
 
   fs.rmSync(tempDir, { recursive: true, force: true });
@@ -113,36 +108,41 @@ async function extractTextWithOCR(pdfPath: string, fileId: string): Promise<stri
 
 async function reindexOCR(fileId: string, ocrText: string) {
   console.log(`[OCR-WORKER] Starting reindex for ${fileId}`);
-  
-  // Check if OCR text is meaningful
+
   const hasLetters = /[a-zA-Z]{3,}/.test(ocrText);
-  const textLength = ocrText.replace(/\s/g, '').length;
-  
+  const textLength = ocrText.replace(/\s/g, "").length;
+
   if (!hasLetters || textLength < 100) {
-    console.log('[OCR-WORKER] ⚠️ OCR text quality too low, skipping indexing');
+    console.log("[OCR-WORKER] ⚠️ OCR text quality too low, skipping indexing");
+
     await db.file.update({
       where: { id: fileId },
-      data: { 
-        ocrText: ocrText + '\n\n[Warning: OCR quality was very poor. The document may be too complex or have special formatting that prevented accurate text extraction.]',
+      data: {
+        ocrText:
+          ocrText +
+          "\n\n[Warning: OCR quality was poor. The document may be too complex for accurate extraction.]",
         uploadStatus: "SUCCESS",
         ocrCompletedAt: new Date(),
         ocrProcessed: true,
         ocrProgress: 100
-      },
+      }
     });
+
     return;
   }
-  
-  const splitter = new RecursiveCharacterTextSplitter({ 
-    chunkSize: 1000, 
-    chunkOverlap: 200 
+
+  const splitter = new RecursiveCharacterTextSplitter({
+    chunkSize: 1000,
+    chunkOverlap: 200
   });
+
   const chunks = await splitter.splitText(ocrText);
   console.log(`[OCR-WORKER] Split into ${chunks.length} chunks`);
-  
-  const embeddings = new OpenAIEmbeddings({ 
-    openAIApiKey: process.env.OPENAI_API_KEY 
+
+  const embeddings = new OpenAIEmbeddings({
+    openAIApiKey: process.env.OPENAI_API_KEY
   });
+
   const vectors = await embeddings.embedDocuments(chunks);
   console.log(`[OCR-WORKER] Generated ${vectors.length} embeddings`);
 
@@ -152,32 +152,38 @@ async function reindexOCR(fileId: string, ocrText: string) {
   const vectorsToUpsert = vectors.map((v, i) => ({
     id: `${fileId}-ocr-${i}`,
     values: v,
-    metadata: { 
+    metadata: {
       text: chunks[i],
-      source: "OCR", 
+      source: "OCR",
       chunkIndex: i,
       fileId: fileId,
-      // Try to extract page number from chunk
-      pageNumber: chunks[i].match(/--- Page (\d+) ---/)?.[1] || 'unknown'
-    },
+      pageNumber:
+        chunks[i].match(/--- Page (\d+) ---/)?.[1] || "unknown"
+    }
   }));
 
   const batchSize = 100;
+
   for (let i = 0; i < vectorsToUpsert.length; i += batchSize) {
     const batch = vectorsToUpsert.slice(i, i + batchSize);
     await index.namespace(fileId).upsert(batch);
-    console.log(`[OCR-WORKER] Upserted batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(vectorsToUpsert.length / batchSize)}`);
+
+    console.log(
+      `[OCR-WORKER] Upserted batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(
+        vectorsToUpsert.length / batchSize
+      )}`
+    );
   }
-  
+
   await db.file.update({
     where: { id: fileId },
-    data: { 
-      ocrText, 
+    data: {
+      ocrText,
       uploadStatus: "SUCCESS",
       ocrCompletedAt: new Date(),
       ocrProcessed: true,
       ocrProgress: 100
-    },
+    }
   });
 
   console.log(`[OCR-WORKER] ✅ Reindexed ${vectors.length} OCR vectors for ${fileId}`);
@@ -195,15 +201,16 @@ if (!pdfPath || !fileId) {
   try {
     const text = await extractTextWithOCR(pdfPath, fileId);
     await reindexOCR(fileId, text);
+
     console.log("[OCR-WORKER] 🎉 All done!");
     process.exit(0);
   } catch (error) {
     console.error("[OCR-WORKER] ❌ Fatal error:", error);
-    
+
     try {
       await db.file.update({
         where: { id: fileId },
-        data: { 
+        data: {
           uploadStatus: "FAILED",
           ocrProcessed: false
         }
@@ -211,7 +218,7 @@ if (!pdfPath || !fileId) {
     } catch (dbError) {
       console.error("[OCR-WORKER] ❌ Could not update file status:", dbError);
     }
-    
+
     process.exit(1);
   }
 })();
