@@ -2,6 +2,9 @@ import ChatWrapper from '@/components/chat/ChatWrapper'
 import PdfRenderer from '@/components/PdfRenderer'
 import { db } from '@/db'
 import { notFound } from 'next/navigation'
+import Link from 'next/link'
+import { BarChart3 } from 'lucide-react'
+import { buttonVariants } from '@/components/ui/button'
 
 interface PageProps {
   params: {
@@ -32,6 +35,20 @@ const Page = async ({ params }: PageProps) => {
         </div>
 
         <div className='shrink-0 flex-[0.75] border-t border-gray-200 lg:w-96 lg:border-l lg:border-t-0'>
+          {/* Analytics Button */}
+          <div className="border-b border-gray-200 bg-white p-3">
+            <Link
+              href={`/dashboard/${fileid}/analytics`}
+              className={buttonVariants({ 
+                variant: 'outline', 
+                className: 'w-full gap-2' 
+              })}
+            >
+              <BarChart3 className="h-4 w-4" />
+              View Analytics
+            </Link>
+          </div>
+          
           <ChatWrapper fileId={file.id} />
         </div>
       </div>
