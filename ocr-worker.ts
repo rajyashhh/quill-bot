@@ -8,6 +8,14 @@ import { getPineconeClient } from "./src/lib/pinecone.ts";
 import { OpenAIEmbeddings } from "langchain/embeddings/openai";
 import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 
+console.log('[OCR-WORKER] Starting OCR worker...');
+console.log('[OCR-WORKER] Checking for credentials...');
+console.log('[OCR-WORKER] GOOGLE_APPLICATION_CREDENTIALS:', process.env.GOOGLE_APPLICATION_CREDENTIALS);
+// Initialize Google Cloud Vision Client with credentials
+const visionClient = new vision.ImageAnnotatorClient({
+  keyFilename: process.env.GOOGLE_APPLICATION_CREDENTIALS || './credentials.json'
+});
+
 async function extractTextWithOCR(pdfPath: string, fileId: string): Promise<string> {
   console.log(`[OCR-WORKER] 🔍 Starting OCR for ${pdfPath}`);
 
@@ -43,9 +51,6 @@ async function extractTextWithOCR(pdfPath: string, fileId: string): Promise<stri
     where: { id: fileId },
     data: { totalPages: pages.length }
   });
-
-  // Initialize Google Cloud Vision Client
-  const visionClient = new vision.ImageAnnotatorClient();
 
   let fullText = "";
   let pageTexts: Array<{ page: number; text: string; quality: string }> = [];
