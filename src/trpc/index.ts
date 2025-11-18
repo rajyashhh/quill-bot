@@ -111,7 +111,7 @@ export const appRouter = router({
       return file
     }),
 
-  // Feedback endpoint - NEW
+  // Feedback endpoints
   submitMessageFeedback: publicProcedure
     .input(
       z.object({
@@ -175,6 +175,121 @@ export const appRouter = router({
       })
 
       return feedback
+    }),
+
+  updateMessageFeedback: publicProcedure
+    .input(
+      z.object({
+        feedbackId: z.string(),
+        correctedResponse: z.string(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      const feedback = await db.messageFeedback.findUnique({
+        where: { id: input.feedbackId },
+      })
+
+      if (!feedback) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Feedback not found',
+        })
+      }
+
+      const updated = await db.messageFeedback.update({
+        where: { id: input.feedbackId },
+        data: {
+          correctedResponse: input.correctedResponse,
+          updatedAt: new Date(),
+        },
+      })
+
+      return updated
+    }),
+
+  // NEW: Get file analytics
+  getFileAnalytics: publicProcedure
+    .input(z.object({ fileId: z.string() }))
+    .query(async ({ input }) => {
+      const { fileId } = input
+
+      const file = await db.file.findFirst({
+        where: { id: fileId },
+      })
+
+      if (!file) throw new TRPCError({ code: 'NOT_FOUND' })
+
+      const messages = await db.message.findMany({
+        where: { fileId },
+        orderBy: { createdAt: 'desc' },
+      })
+
+      const feedback = await db.messageFeedback.findMany({
+        where: { fileId },
+        include: {
+          Message: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      })
+
+      const feedbackWithContext = await Promise.all(
+        feedback.map(async (fb) => {
+          const userMessage = await db.message.findFirst({
+            where: {
+              fileId,
+              isUserMessage: true,
+              createdAt: {
+                lt: fb.Message.createdAt,
+              },
+            },
+            orderBy: {
+              createdAt: 'desc',
+            },
+          })
+
+          return {
+            ...fb,
+            userQuestion: userMessage?.text || 'Question not found',
+          }
+        })
+      )
+
+      const progress = await db.studentProgress.findUnique({
+        where: { fileId },
+      })
+
+      const chapters = await db.chapter.findMany({
+        where: { fileId },
+        include: {
+          topics: true,
+        },
+        orderBy: {
+          chapterNumber: 'asc',
+        },
+      })
+
+      const totalMessages = messages.length
+      const userMessages = messages.filter(m => m.isUserMessage).length
+      const aiMessages = messages.filter(m => !m.isUserMessage).length
+      const thumbsUp = feedback.filter(f => f.feedbackType === 'THUMBS_UP').length
+      const thumbsDown = feedback.filter(f => f.feedbackType === 'THUMBS_DOWN').length
+      const completedChapters = progress?.completedChapters || 0
+      const totalChapters = chapters.length
+
+      return {
+        file,
+        messages,
+        feedbackWithContext,
+        progress,
+        chapters,
+        totalMessages,
+        userMessages,
+        aiMessages,
+        thumbsUp,
+        thumbsDown,
+        completedChapters,
+        totalChapters,
+      }
     }),
 
   // Chapter-related endpoints
