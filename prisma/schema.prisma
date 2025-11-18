@@ -109,13 +109,13 @@ model Topic {
 }
 
 model MessageFeedback {
-  id                String            @id
+  id                String            @id @default(cuid())  // CHANGED: Added @default(cuid())
   messageId         String            @unique
   fileId            String
   feedbackType      FeedbackType
   feedbackReason    String?
   createdAt         DateTime          @default(now())
-  updatedAt         DateTime
+  updatedAt         DateTime          @updatedAt  // CHANGED: Added @updatedAt
   correctedResponse String?
   feedbackCategory  FeedbackCategory?
   File              File              @relation(fields: [fileId], references: [id], onDelete: Cascade)
@@ -127,7 +127,7 @@ model MessageFeedback {
 }
 
 model QuizQuestion {
-  id            String   @id
+  id            String   @id @default(cuid())  // CHANGED: Added @default(cuid())
   fileId        String
   chapterNumber Int
   question      String
@@ -136,14 +136,14 @@ model QuizQuestion {
   explanation   String
   difficulty    String
   createdAt     DateTime @default(now())
-  updatedAt     DateTime
+  updatedAt     DateTime @updatedAt  // CHANGED: Added @updatedAt
   File          File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
 
   @@index([fileId, chapterNumber])
 }
 
 model StudentProgress {
-  id                String   @id
+  id                String   @id @default(cuid())  // CHANGED: Added @default(cuid())
   fileId            String   @unique
   currentChapter    Int      @default(1)
   currentTopic      Int?
@@ -153,7 +153,7 @@ model StudentProgress {
   lastInteraction   DateTime @default(now())
   isFirstTime       Boolean  @default(true)
   createdAt         DateTime @default(now())
-  updatedAt         DateTime
+  updatedAt         DateTime @updatedAt  // CHANGED: Added @updatedAt
   File              File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
 
   @@index([fileId])

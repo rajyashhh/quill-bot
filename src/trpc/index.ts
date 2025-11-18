@@ -111,6 +111,72 @@ export const appRouter = router({
       return file
     }),
 
+  // Feedback endpoint - NEW
+  submitMessageFeedback: publicProcedure
+    .input(
+      z.object({
+        messageId: z.string(),
+        feedbackType: z.enum(['THUMBS_UP', 'THUMBS_DOWN']),
+        feedbackReason: z.string().optional(),
+        feedbackCategory: z.enum([
+          'TOO_COMPLEX',
+          'INCORRECT_INFO',
+          'MISSING_CONTEXT',
+          'OFF_TOPIC',
+          'OTHER'
+        ]).optional(),
+        correctedResponse: z.string().optional(),
+      })
+    )
+    .mutation(async ({ input }) => {
+      // Get the message to find the fileId
+      const message = await db.message.findUnique({
+        where: { id: input.messageId },
+      })
+
+      if (!message) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: 'Message not found',
+        })
+      }
+
+      // Check if feedback already exists for this message
+      const existingFeedback = await db.messageFeedback.findUnique({
+        where: { messageId: input.messageId },
+      })
+
+      if (existingFeedback) {
+        // Update existing feedback
+        const updatedFeedback = await db.messageFeedback.update({
+          where: { messageId: input.messageId },
+          data: {
+            feedbackType: input.feedbackType,
+            feedbackReason: input.feedbackReason,
+            feedbackCategory: input.feedbackCategory,
+            correctedResponse: input.correctedResponse,
+            updatedAt: new Date(),
+          },
+        })
+
+        return updatedFeedback
+      }
+
+      // Create new feedback
+      const feedback = await db.messageFeedback.create({
+        data: {
+          messageId: input.messageId,
+          fileId: message.fileId!,
+          feedbackType: input.feedbackType,
+          feedbackReason: input.feedbackReason,
+          feedbackCategory: input.feedbackCategory,
+          correctedResponse: input.correctedResponse,
+        },
+      })
+
+      return feedback
+    }),
+
   // Chapter-related endpoints
   extractChapters: publicProcedure
     .input(z.object({ fileId: z.string() }))
