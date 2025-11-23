@@ -7,6 +7,44 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model QuizAttempt {
+  id              String   @id @default(cuid())
+  fileId          String
+  chapterNumber   Int
+  sessionKey      String
+  score           Int
+  totalQuestions  Int      @default(10)
+  answers         Json
+  weakTopics      String[] @default([])
+  passed          Boolean  @default(false)
+  attemptNumber   Int      @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  File File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  
+  @@index([fileId, chapterNumber])
+  @@index([sessionKey])
+}
+
+model LearningState {
+  id                 String   @id @default(cuid())
+  fileId             String   
+  sessionKey         String   @unique
+  currentChapter     Int      @default(1)
+  currentTopic       Int      @default(1)
+  learningPhase      String   @default("introduction")
+  chaptersCompleted  Int[]    @default([])
+  quizzesPassed      Int[]    @default([])
+  needsReview        Boolean  @default(false)
+  reviewTopics       String[] @default([])
+  messageCount       Int      @default(0)
+  lastInteraction    DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  
+  File File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+}
 model File {
   id              String            @id @default(cuid())
   name            String
@@ -26,6 +64,9 @@ model File {
   
   createdAt       DateTime          @default(now())
   updatedAt       DateTime          @updatedAt
+
+  quizAttempts  QuizAttempt[]
+  learningState LearningState[]
 
   chapters        Chapter[]
   images          ExtractedImage[]
@@ -135,6 +176,7 @@ model QuizQuestion {
   correctAnswer String
   explanation   String
   difficulty    String
+  topicCovered  String 
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt  // CHANGED: Added @updatedAt
   File          File     @relation(fields: [fileId], references: [id], onDelete: Cascade)

@@ -13,203 +13,300 @@ export const POST = async (req: NextRequest) => {
 
     const body = await req.json()
 
-  const { fileId, message } =
-    SendMessageValidator.parse(body)
+    const { fileId, message } = SendMessageValidator.parse(body)
 
-  const file = await db.file.findFirst({
-    where: {
-      id: fileId,
-    },
-  })
-  
-  // Fetch chapters separately to avoid TypeScript errors
-  const chapters = await db.chapter.findMany({
-    where: {
-      fileId: fileId,
-    },
-    include: {
-      topics: true
-    },
-    orderBy: {
-      chapterNumber: 'asc'
-    }
-  })
-
-  if (!file)
-    return new Response('Not found', { status: 404 })
-
-  await db.message.create({
-    data: {
-      text: message,
-      isUserMessage: true,
-      fileId,
-    },
-  })
-
-  // Check if the query is asking about chapters/topics
-  const isChapterQuery = /chapter|topic|section|unit|module/i.test(message)
-  const chapterNumberMatch = message.match(/chapter\s*(\d+)/i)
-  
-  let chapterInfo = ''
-  if (isChapterQuery && chapters.length > 0) {
-    if (chapterNumberMatch) {
-      // User is asking about a specific chapter
-      const chapterNum = parseInt(chapterNumberMatch[1])
-      const chapter = chapters.find((ch: { chapterNumber: number }) => ch.chapterNumber === chapterNum)
-      if (chapter) {
-        chapterInfo = `\n\nChapter ${chapter.chapterNumber}: ${chapter.title}\n`
-        chapterInfo += `Pages: ${chapter.startPage}-${chapter.endPage}\n`
-        if (chapter.topics.length > 0) {
-          chapterInfo += `\nTopics in this chapter:\n`
-          chapter.topics.forEach((topic: { topicNumber: any; title: any; estimatedTime: any }) => {
-            chapterInfo += `- Topic ${topic.topicNumber}: ${topic.title} (Est. ${topic.estimatedTime} mins)\n`
-          })
-        }
-      }
-    } else {
-      // User is asking about chapters in general
-      chapterInfo = `\n\nAvailable Chapters:\n`
-      chapters.forEach((chapter: { chapterNumber: any; title: any; startPage: any; endPage: any }) => {
-        chapterInfo += `- Chapter ${chapter.chapterNumber}: ${chapter.title} (Pages ${chapter.startPage}-${chapter.endPage})\n`
-      })
-    }
-  }
-
-  // 1: vectorize message
-  const embeddings = new OpenAIEmbeddings({
-    openAIApiKey: process.env.OPENAI_API_KEY,
-  })
-
-  const pinecone = await getPineconeClient()
-  const pineconeIndex = pinecone.Index('quill')
-
-  // Create embedding for the query
-  const queryEmbedding = await embeddings.embedQuery(message)
-
-  // Query Pinecone directly
-  console.log('[CHAT] Querying Pinecone with namespace:', file.id)
-  const queryResponse = await pineconeIndex
-    .namespace(file.id)
-    .query({
-      vector: queryEmbedding,
-      topK: 10, // Increased from 4 to get more context
-      includeValues: false,
-      includeMetadata: true,
-    })
-
-  console.log('[CHAT] Query response:', JSON.stringify(queryResponse, null, 2))
-
-  // Extract the text content from the results with page numbers and image references
-  const results = queryResponse.matches?.map((match) => ({
-    pageContent: match.metadata?.text || '',
-    metadata: {
-      pageNumber: match.metadata?.pageNumber,
-      score: match.score,
-      imageIds: match.metadata?.imageIds || [],
-      referencedImageIds: match.metadata?.referencedImageIds || [],
-      hasImages: match.metadata?.hasImages || false,
-      source: match.metadata?.source, // Track if this is OCR content
-    },
-  })) || []
-
-  console.log('[CHAT] Extracted results:', results.length, 'documents')
-  
-  // Check if we got any OCR results from Pinecone
-  const ocrResults = results.filter(r => r.metadata.source === 'OCR')
-  const hasOcrResults = ocrResults.length > 0
-  const hasGoodOcrContent = ocrResults.some(r => r.pageContent.length > 50)
-  
-  console.log('[CHAT] OCR results from Pinecone:', ocrResults.length)
-  console.log('[CHAT] Has good OCR content:', hasGoodOcrContent)
-  
-  // If file used OCR but we have poor/no results, add full OCR text as fallback
-  let ocrContext = ''
-  if (file.usedOCR && file.ocrText) {
-    if (!hasOcrResults || !hasGoodOcrContent) {
-      console.log('[CHAT] Adding full OCR text from database (', file.ocrText.length, 'chars)')
-      // Use more of the OCR text if we have no good results at all
-      const maxLength = hasOcrResults ? 3000 : 8000
-      ocrContext = `\n\n---------------- OCR EXTRACTED TEXT ----------------\n${file.ocrText.substring(0, maxLength)}\n`
-    } else {
-      console.log('[CHAT] Using OCR results from Pinecone')
-    }
-  }
-  
-  // Collect all unique image IDs from the results
-  const allImageIds = new Set<string>()
-  results.forEach(result => {
-    if (result.metadata.imageIds && Array.isArray(result.metadata.imageIds)) {
-      result.metadata.imageIds.forEach((id: string) => allImageIds.add(id))
-    }
-    if (result.metadata.referencedImageIds && Array.isArray(result.metadata.referencedImageIds)) {
-      result.metadata.referencedImageIds.forEach((id: string) => allImageIds.add(id))
-    }
-  })
-  
-  // Fetch image data if any images are referenced
-  let images: any[] = []
-  if (allImageIds.size > 0) {
-    console.log('[CHAT] Fetching', allImageIds.size, 'images')
-    images = await db.extractedImage.findMany({
+    const file = await db.file.findFirst({
       where: {
-        id: {
-          in: Array.from(allImageIds)
-        }
+        id: fileId,
       },
-      select: {
-        id: true,
-        imageUrl: true,
-        caption: true,
-        pageNumber: true,
-        imageType: true,
-        topics: true,
+    })
+    
+    // Fetch chapters separately to avoid TypeScript errors
+    const chapters = await db.chapter.findMany({
+      where: {
+        fileId: fileId,
+      },
+      include: {
+        topics: true
+      },
+      orderBy: {
+        chapterNumber: 'asc'
       }
     })
-    console.log('[CHAT] Found', images.length, 'images')
-  }
-  
-  // Format context with page numbers
-  const contextWithPages = results
-    .filter(r => r.pageContent.trim().length > 0) // Filter out empty content
-    .map((r) => {
-      const pageNum = r.metadata.pageNumber ? `[Page ${r.metadata.pageNumber}]` : '[Page unknown]'
-      const sourceTag = r.metadata.source === 'OCR' ? ' [OCR]' : ''
-      return `${pageNum}${sourceTag} ${r.pageContent}`
-    }).join('\n\n')
 
-  const prevMessages = await db.message.findMany({
-    where: {
-      fileId,
-    },
-    orderBy: {
-      createdAt: 'asc',
-    },
-    take: 6,
-  })
+    if (!file) return new Response('Not found', { status: 404 })
 
-  const formattedPrevMessages = prevMessages.map((msg) => ({
-    role: msg.isUserMessage
-      ? ('user' as const)
-      : ('assistant' as const),
-    content: msg.text,
-  }))
-
-  const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-  })
-
-  const response = await openai.chat.completions.create({
-    model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
-    stream: true,
-    messages: [
-      {
-        role: 'system',
-        content:
-          'You are a helpful AI assistant that answers questions based on the provided PDF context. Always cite the page numbers where you found the information. When relevant images are available, reference them in your answer (e.g., "As shown in Figure 3.1 on page 45..."). When chapter information is provided, use it to give structured answers about the document organization. Use the following pieces of context to answer the users question accurately and comprehensively. Format your response in markdown when appropriate. Paraphrase the content naturally while maintaining technical accuracy.',
+    await db.message.create({
+      data: {
+        text: message,
+        isUserMessage: true,
+        fileId,
       },
-      {
-        role: 'user',
-        content: `Answer the following question based on the provided context. Each piece of context is prefixed with its page number in square brackets like [Page 123]. Some context may be marked as [OCR], which means it was extracted using Optical Character Recognition from scanned pages. When you use information from the context, ALWAYS cite the page number(s) where you found it. If the answer cannot be found in the context, say "I cannot find information about that in the provided PDF."
+    })
+
+    // ============ NEW: AI TUTOR LOGIC ============
+    // Get session key from headers OR body
+    const sessionKey = req.headers.get('x-session-key') || 
+                       body.sessionKey || 
+                       `session-${Date.now()}`
+    
+    console.log('[TUTOR] Using session key:', sessionKey)
+    
+    // Get or create learning state
+    let learningState = await db.learningState.findUnique({
+      where: { sessionKey },
+    })
+
+    console.log('[TUTOR] Found learning state:', learningState)
+
+    if (!learningState) {
+      console.log('[TUTOR] Creating new learning state')
+      learningState = await db.learningState.create({
+        data: {
+          fileId,
+          sessionKey,
+          currentChapter: 1,
+          currentTopic: 1,
+          learningPhase: 'introduction',
+          messageCount: 0, // ADDED: Initialize to 0
+        },
+      })
+      console.log('[TUTOR] Created:', learningState)
+    }
+
+    // Increment message count and update last interaction
+    const updatedState = await db.learningState.update({
+      where: { sessionKey },
+      data: {
+        messageCount: { increment: 1 }, // CHANGED: Use increment instead
+        lastInteraction: new Date(),
+      },
+    })
+
+    console.log('[TUTOR] Updated message count to:', updatedState.messageCount)
+
+    // Get current chapter for context
+    const currentChapter = chapters.find(ch => ch.chapterNumber === updatedState.currentChapter)
+    const shouldTriggerQuiz = updatedState.messageCount >= 7 // After 7 messages, suggest quiz on 8th
+
+    console.log('[TUTOR] Should trigger quiz?', shouldTriggerQuiz, '(count:', updatedState.messageCount, ')')
+
+    // ============ END NEW LOGIC ============
+
+    // Check if the query is asking about chapters/topics
+    const isChapterQuery = /chapter|topic|section|unit|module/i.test(message)
+    const chapterNumberMatch = message.match(/chapter\s*(\d+)/i)
+    
+    let chapterInfo = ''
+    if (isChapterQuery && chapters.length > 0) {
+      if (chapterNumberMatch) {
+        // User is asking about a specific chapter
+        const chapterNum = parseInt(chapterNumberMatch[1])
+        const chapter = chapters.find((ch: { chapterNumber: number }) => ch.chapterNumber === chapterNum)
+        if (chapter) {
+          chapterInfo = `\n\nChapter ${chapter.chapterNumber}: ${chapter.title}\n`
+          chapterInfo += `Pages: ${chapter.startPage}-${chapter.endPage}\n`
+          if (chapter.topics.length > 0) {
+            chapterInfo += `\nTopics in this chapter:\n`
+            chapter.topics.forEach((topic: { topicNumber: any; title: any; estimatedTime: any }) => {
+              chapterInfo += `- Topic ${topic.topicNumber}: ${topic.title} (Est. ${topic.estimatedTime} mins)\n`
+            })
+          }
+        }
+      } else {
+        // User is asking about chapters in general
+        chapterInfo = `\n\nAvailable Chapters:\n`
+        chapters.forEach((chapter: { chapterNumber: any; title: any; startPage: any; endPage: any }) => {
+          chapterInfo += `- Chapter ${chapter.chapterNumber}: ${chapter.title} (Pages ${chapter.startPage}-${chapter.endPage})\n`
+        })
+      }
+    }
+
+    // 1: vectorize message
+    const embeddings = new OpenAIEmbeddings({
+      openAIApiKey: process.env.OPENAI_API_KEY,
+    })
+
+    const pinecone = await getPineconeClient()
+    const pineconeIndex = pinecone.Index('quill')
+
+    // Create embedding for the query
+    const queryEmbedding = await embeddings.embedQuery(message)
+
+    // Query Pinecone directly
+    console.log('[CHAT] Querying Pinecone with namespace:', file.id)
+    const queryResponse = await pineconeIndex
+      .namespace(file.id)
+      .query({
+        vector: queryEmbedding,
+        topK: 10, // Increased from 4 to get more context
+        includeValues: false,
+        includeMetadata: true,
+      })
+
+    console.log('[CHAT] Query response:', JSON.stringify(queryResponse, null, 2))
+
+    // Extract the text content from the results with page numbers and image references
+    const results = queryResponse.matches?.map((match) => ({
+      pageContent: match.metadata?.text || '',
+      metadata: {
+        pageNumber: match.metadata?.pageNumber,
+        score: match.score,
+        imageIds: match.metadata?.imageIds || [],
+        referencedImageIds: match.metadata?.referencedImageIds || [],
+        hasImages: match.metadata?.hasImages || false,
+        source: match.metadata?.source, // Track if this is OCR content
+      },
+    })) || []
+
+    console.log('[CHAT] Extracted results:', results.length, 'documents')
+    
+    // Check if we got any OCR results from Pinecone
+    const ocrResults = results.filter(r => r.metadata.source === 'OCR')
+    const hasOcrResults = ocrResults.length > 0
+    const hasGoodOcrContent = ocrResults.some(r => r.pageContent.length > 50)
+    
+    console.log('[CHAT] OCR results from Pinecone:', ocrResults.length)
+    console.log('[CHAT] Has good OCR content:', hasGoodOcrContent)
+    
+    // If file used OCR but we have poor/no results, add full OCR text as fallback
+    let ocrContext = ''
+    if (file.usedOCR && file.ocrText) {
+      if (!hasOcrResults || !hasGoodOcrContent) {
+        console.log('[CHAT] Adding full OCR text from database (', file.ocrText.length, 'chars)')
+        // Use more of the OCR text if we have no good results at all
+        const maxLength = hasOcrResults ? 3000 : 8000
+        ocrContext = `\n\n---------------- OCR EXTRACTED TEXT ----------------\n${file.ocrText.substring(0, maxLength)}\n`
+      } else {
+        console.log('[CHAT] Using OCR results from Pinecone')
+      }
+    }
+    
+    // Collect all unique image IDs from the results
+    const allImageIds = new Set<string>()
+    results.forEach(result => {
+      if (result.metadata.imageIds && Array.isArray(result.metadata.imageIds)) {
+        result.metadata.imageIds.forEach((id: string) => allImageIds.add(id))
+      }
+      if (result.metadata.referencedImageIds && Array.isArray(result.metadata.referencedImageIds)) {
+        result.metadata.referencedImageIds.forEach((id: string) => allImageIds.add(id))
+      }
+    })
+    
+    // Fetch image data if any images are referenced
+    let images: any[] = []
+    if (allImageIds.size > 0) {
+      console.log('[CHAT] Fetching', allImageIds.size, 'images')
+      images = await db.extractedImage.findMany({
+        where: {
+          id: {
+            in: Array.from(allImageIds)
+          }
+        },
+        select: {
+          id: true,
+          imageUrl: true,
+          caption: true,
+          pageNumber: true,
+          imageType: true,
+          topics: true,
+        }
+      })
+      console.log('[CHAT] Found', images.length, 'images')
+    }
+    
+    // Format context with page numbers
+    const contextWithPages = results
+      .filter(r => r.pageContent.trim().length > 0) // Filter out empty content
+      .map((r) => {
+        const pageNum = r.metadata.pageNumber ? `[Page ${r.metadata.pageNumber}]` : '[Page unknown]'
+        const sourceTag = r.metadata.source === 'OCR' ? ' [OCR]' : ''
+        return `${pageNum}${sourceTag} ${r.pageContent}`
+      }).join('\n\n')
+
+    const prevMessages = await db.message.findMany({
+      where: {
+        fileId,
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+      take: 6,
+    })
+
+    const formattedPrevMessages = prevMessages.map((msg) => ({
+      role: msg.isUserMessage
+        ? ('user' as const)
+        : ('assistant' as const),
+      content: msg.text,
+    }))
+
+    // ============ NEW: BUILD AI TUTOR SYSTEM PROMPT ============
+    let tutorPrompt = ''
+    const currentTopic = currentChapter?.topics.find(t => t.topicNumber === updatedState.currentTopic)
+    
+    if (updatedState.learningPhase === 'introduction') {
+      tutorPrompt = `\n\n🎓 AI TUTOR MODE: INTRODUCTION
+You are introducing Chapter ${updatedState.currentChapter}: ${currentChapter?.title}.
+Welcome the student and briefly explain what they'll learn in this chapter.
+Keep it warm and encouraging (2-3 sentences).
+After this message, you'll help them learn the topics.`
+      
+      // Update phase to learning after introduction
+      await db.learningState.update({
+        where: { sessionKey },
+        data: { learningPhase: 'learning' },
+      })
+    } 
+    else if (updatedState.learningPhase === 'learning') {
+      tutorPrompt = `\n\n🎓 AI TUTOR MODE: TEACHING
+Current Chapter: ${updatedState.currentChapter} - ${currentChapter?.title}
+Current Topic: ${currentTopic?.title || 'Overview'}
+Message Count: ${updatedState.messageCount}/8
+
+Teaching Guidelines:
+1. Answer questions clearly and concisely (under 150 words)
+2. Use examples and analogies when helpful
+3. Check understanding with follow-up questions
+4. Cite page numbers from the context
+${shouldTriggerQuiz ? '\n⚠️ IMPORTANT: After answering this question, suggest: "Great progress! I think you\'re ready for a quick quiz to test your understanding of this chapter. Would you like to take it now?"' : ''}
+${updatedState.messageCount >= 5 ? '\n💡 TIP: You\'ve covered quite a bit. Consider checking understanding more frequently.' : ''}`
+    } 
+    else if (updatedState.learningPhase === 'review') {
+      tutorPrompt = `\n\n🎓 AI TUTOR MODE: REVIEW
+The student needs help with these topics: ${updatedState.reviewTopics.join(', ')}
+
+Review Guidelines:
+1. Focus on clarifying these specific weak areas
+2. Provide concrete examples and simpler explanations
+3. Break down complex concepts into smaller parts
+4. After thorough review, suggest retaking the quiz`
+    }
+    // ============ END NEW LOGIC ============
+
+    const openai = new OpenAI({
+      apiKey: process.env.OPENAI_API_KEY,
+    })
+
+    const response = await openai.chat.completions.create({
+      model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
+      stream: true,
+      messages: [
+        {
+          role: 'system',
+          content: `You are an AI tutor helping students learn from their textbook. You guide them through chapters, answer questions, and help them master concepts before moving forward.${tutorPrompt}
+
+Core Responsibilities:
+- Answer questions based on the PDF context
+- Always cite page numbers where you found information
+- Reference relevant images when available
+- Use markdown formatting for clarity
+- Keep responses concise but thorough
+- Be encouraging and supportive`,
+        },
+        {
+          role: 'user',
+          content: `Answer the following question based on the provided context. Each piece of context is prefixed with its page number in square brackets like [Page 123]. Some context may be marked as [OCR], which means it was extracted using Optical Character Recognition from scanned pages. When you use information from the context, ALWAYS cite the page number(s) where you found it. If the answer cannot be found in the context, say "I cannot find information about that in the provided PDF."
         
   \n----------------\n
   
@@ -235,48 +332,67 @@ export const POST = async (req: NextRequest) => {
   ` : ''}
   
   USER INPUT: ${message}`,
-      },
-    ],
-  })
+        },
+      ],
+    })
 
-  // Convert the response into a readable stream
-  const stream = new ReadableStream({
-    async start(controller) {
-      let fullResponse = ''
-      
-      try {
-        for await (const chunk of response) {
-          const content = chunk.choices[0]?.delta?.content || ''
-          fullResponse += content
-          
-          // Encode and send the chunk
-          const bytes = new TextEncoder().encode(content)
-          controller.enqueue(bytes)
-        }
+    // Convert the response into a readable stream
+    const stream = new ReadableStream({
+      async start(controller) {
+        let fullResponse = ''
         
-        // Save the complete message after streaming is done
-        await db.message.create({
-          data: {
-            text: fullResponse,
-            isUserMessage: false,
-            fileId,
-          },
-        })
-      } catch (error) {
-        controller.error(error)
-      } finally {
-        controller.close()
-      }
-    },
-  })
+        try {
+          for await (const chunk of response) {
+            const content = chunk.choices[0]?.delta?.content || ''
+            fullResponse += content
+            
+            // Encode and send the chunk
+            const bytes = new TextEncoder().encode(content)
+            controller.enqueue(bytes)
+          }
+          
+          // Save the complete message after streaming is done
+          await db.message.create({
+            data: {
+              text: fullResponse,
+              isUserMessage: false,
+              fileId,
+            },
+          })
 
-  // Return both the stream and images data
-  return new Response(stream, {
-    headers: {
-      'Content-Type': 'text/event-stream',
-      'X-Images-Data': JSON.stringify(images), // Send images data in header
-    },
-  })
+          // ============ NEW: CHECK IF QUIZ SHOULD BE TRIGGERED ============
+          console.log('[TUTOR] Checking quiz trigger...')
+          console.log('[TUTOR] Should trigger?', shouldTriggerQuiz)
+          console.log('[TUTOR] Response mentions quiz?', fullResponse.toLowerCase().includes('quiz'))
+          
+          if (shouldTriggerQuiz && fullResponse.toLowerCase().includes('quiz')) {
+            console.log('[TUTOR] ✅ TRIGGERING QUIZ!')
+            await db.learningState.update({
+              where: { sessionKey },
+              data: { learningPhase: 'quiz-ready' },
+            })
+          }
+          // ============ END NEW LOGIC ============
+        } catch (error) {
+          console.error('[TUTOR] Error:', error)
+          controller.error(error)
+        } finally {
+          controller.close()
+        }
+      },
+    })
+
+    // Return both the stream and images data + learning state
+    return new Response(stream, {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'X-Images-Data': JSON.stringify(images),
+        'X-Learning-Phase': updatedState.learningPhase,
+        'X-Should-Quiz': shouldTriggerQuiz.toString(),
+        'X-Current-Chapter': updatedState.currentChapter.toString(),
+        'X-Message-Count': updatedState.messageCount.toString(),
+      },
+    })
   } catch (error) {
     console.error('[MESSAGE_ERROR]', error)
     return new Response('Internal error', { status: 500 })

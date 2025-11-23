@@ -1,7 +1,7 @@
 import { Send } from 'lucide-react'
 import { Button } from '../ui/button'
 import { Textarea } from '../ui/textarea'
-import { useContext, useRef } from 'react'
+import { useContext, useRef, useEffect } from 'react'
 import { ChatContext } from './ChatContext'
 import { VoiceInput } from '../VoiceInput'
 
@@ -18,6 +18,20 @@ const ChatInput = ({ isDisabled }: ChatInputProps) => {
   } = useContext(ChatContext)
 
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+
+  // ============ NEW: Initialize session key ============
+  useEffect(() => {
+    // Ensure session key exists in sessionStorage
+    const existingKey = sessionStorage.getItem('sessionKey')
+    if (!existingKey) {
+      const newKey = `session-${Date.now()}`
+      sessionStorage.setItem('sessionKey', newKey)
+      console.log('🔑 [ChatInput] Created session key:', newKey)
+    } else {
+      console.log('🔑 [ChatInput] Using existing session key:', existingKey)
+    }
+  }, [])
+  // ============ END NEW ============
 
   const handleVoiceTranscript = (transcript: string) => {
     // Update the message with voice transcript

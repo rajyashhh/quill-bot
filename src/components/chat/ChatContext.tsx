@@ -3,6 +3,7 @@ import {
   createContext,
   useRef,
   useState,
+  useEffect,
 } from 'react'
 import { useToast } from '../ui/use-toast'
 import { useMutation } from '@tanstack/react-query'
@@ -43,17 +44,44 @@ export const ChatContextProvider = ({
 
   const backupMessage = useRef('')
 
+  // ============ NEW: Initialize and manage session key ============
+  const [sessionKey, setSessionKey] = useState<string>('')
+
+  useEffect(() => {
+    // Get or create session key
+    const existingKey = sessionStorage.getItem('sessionKey')
+    if (existingKey) {
+      console.log('🔑 [ChatContext] Using existing session key:', existingKey)
+      setSessionKey(existingKey)
+    } else {
+      const newKey = `session-${Date.now()}`
+      sessionStorage.setItem('sessionKey', newKey)
+      console.log('🔑 [ChatContext] Created new session key:', newKey)
+      setSessionKey(newKey)
+    }
+  }, [])
+  // ============ END NEW ============
+
   const { mutate: sendMessage } = useMutation({
     mutationFn: async ({
       message,
+      sessionKey, // ADDED
     }: {
       message: string
+      sessionKey: string // ADDED
     }) => {
+      console.log('📤 [ChatContext] Sending message with session:', sessionKey)
+      
       const response = await fetch('/api/message', {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-session-key': sessionKey, // ADDED
+        },
         body: JSON.stringify({
           fileId,
           message,
+          sessionKey, // ADDED
         }),
       })
 
@@ -65,7 +93,20 @@ export const ChatContextProvider = ({
       const imagesData = response.headers.get('X-Images-Data')
       const images = imagesData ? JSON.parse(imagesData) : []
 
-      return { body: response.body, images }
+      // ADDED: Extract learning state from headers
+      const learningPhase = response.headers.get('X-Learning-Phase')
+      const shouldQuiz = response.headers.get('X-Should-Quiz') === 'true'
+      const messageCount = response.headers.get('X-Message-Count')
+
+      console.log('📊 [ChatContext] Learning state:', { learningPhase, shouldQuiz, messageCount })
+
+      return { 
+        body: response.body, 
+        images,
+        learningPhase,
+        shouldQuiz,
+        messageCount,
+      }
     },
     onMutate: async ({ message }) => {
       backupMessage.current = message
@@ -204,6 +245,14 @@ export const ChatContextProvider = ({
           }
         )
       }
+
+      // ============ NEW: Invalidate learning state after message ============
+      await utils.getLearningState.invalidate({
+        fileId,
+        sessionKey,
+      })
+      console.log('🔄 [ChatContext] Invalidated learning state')
+      // ============ END NEW ============
     },
 
     onError: (_, __, context) => {
@@ -226,7 +275,16 @@ export const ChatContextProvider = ({
     setMessage(e.target.value)
   }
 
-  const addMessage = () => sendMessage({ message })
+  // ============ UPDATED: Pass session key ============
+  const addMessage = () => {
+    if (!sessionKey) {
+      console.error('❌ [ChatContext] No session key available!')
+      return
+    }
+    console.log('📨 [ChatContext] Adding message with session:', sessionKey)
+    sendMessage({ message, sessionKey })
+  }
+  // ============ END UPDATE ============
 
   return (
     <ChatContext.Provider

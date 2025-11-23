@@ -6,6 +6,7 @@ import {
 import { TRPCError } from '@trpc/server'
 import { db } from '@/db'
 import { z } from 'zod'
+import { generateChapterQuiz as generateQuiz } from '@/lib/quiz-generator'
 import { INFINITE_QUERY_LIMIT } from '@/config/infinite-query'
 import { ChapterExtractor } from '@/lib/chapter-extractor'
 
@@ -129,7 +130,6 @@ export const appRouter = router({
       })
     )
     .mutation(async ({ input }) => {
-      // Get the message to find the fileId
       const message = await db.message.findUnique({
         where: { id: input.messageId },
       })
@@ -141,13 +141,11 @@ export const appRouter = router({
         })
       }
 
-      // Check if feedback already exists for this message
       const existingFeedback = await db.messageFeedback.findUnique({
         where: { messageId: input.messageId },
       })
 
       if (existingFeedback) {
-        // Update existing feedback
         const updatedFeedback = await db.messageFeedback.update({
           where: { messageId: input.messageId },
           data: {
@@ -162,7 +160,6 @@ export const appRouter = router({
         return updatedFeedback
       }
 
-      // Create new feedback
       const feedback = await db.messageFeedback.create({
         data: {
           messageId: input.messageId,
@@ -207,7 +204,220 @@ export const appRouter = router({
       return updated
     }),
 
-  // NEW: Get file analytics
+  // FIXED: Get or create learning state with logging
+  getLearningState: publicProcedure
+    .input(z.object({ 
+      fileId: z.string(),
+      sessionKey: z.string() 
+    }))
+    .query(async ({ input }) => {
+      console.log('🔍 getLearningState called:', input)
+      
+      let state = await db.learningState.findUnique({
+        where: { sessionKey: input.sessionKey },
+      })
+
+      console.log('📊 Found state:', state)
+
+      if (!state) {
+        console.log('🆕 Creating new learning state')
+        state = await db.learningState.create({
+          data: {
+            fileId: input.fileId,
+            sessionKey: input.sessionKey,
+            currentChapter: 1,
+            currentTopic: 1,
+            learningPhase: 'introduction',
+            messageCount: 0, // ADDED: Initialize to 0
+          },
+        })
+        console.log('✅ Created state:', state)
+      }
+
+      return state
+    }),
+
+  // Generate quiz for current chapter
+// Generate quiz for current chapter
+generateChapterQuiz: publicProcedure
+  .input(z.object({
+    fileId: z.string(),
+    chapterNumber: z.number(),
+  }))
+  .query(async ({ input }) => {
+    const { fileId, chapterNumber } = input
+
+    console.log(`📝 [tRPC] Checking for existing quiz: Chapter ${chapterNumber}`)
+
+    // Check if quiz already exists
+    const existingQuiz = await db.quizQuestion.findMany({
+      where: { fileId, chapterNumber },
+      take: 10,
+    })
+
+    if (existingQuiz.length >= 10) {
+      console.log(`✅ [tRPC] Found ${existingQuiz.length} existing questions`)
+      return existingQuiz
+    }
+
+    console.log(`🔨 [tRPC] No existing quiz found, generating new one...`)
+
+    // Get chapter content
+    const chapter = await db.chapter.findFirst({
+      where: { fileId, chapterNumber },
+      include: { topics: true },
+    })
+
+    if (!chapter) {
+      throw new TRPCError({ code: 'NOT_FOUND', message: 'Chapter not found' })
+    }
+
+    // Generate quiz with AI
+    const topics = chapter.topics.map(t => t.title)
+    
+    try {
+      const newQuestions = await generateQuiz({
+        fileId,
+        chapterNumber,
+        chapterContent: chapter.content,
+        chapterTitle: chapter.title,
+        topics,
+        count: 10,
+      })
+
+      console.log(`✅ [tRPC] Successfully generated ${newQuestions.length} questions`)
+      return newQuestions
+    } catch (error) {
+      console.error('❌ [tRPC] Quiz generation failed:', error)
+      throw new TRPCError({ 
+        code: 'INTERNAL_SERVER_ERROR', 
+        message: 'Failed to generate quiz questions' 
+      })
+    }
+  }),
+
+
+  // Submit quiz answers
+  submitQuizAnswers: publicProcedure
+    .input(z.object({
+      fileId: z.string(),
+      chapterNumber: z.number(),
+      sessionKey: z.string(),
+      answers: z.array(z.object({
+        questionId: z.string(),
+        selectedAnswer: z.string(),
+      })),
+    }))
+    .mutation(async ({ input }) => {
+      const { fileId, chapterNumber, sessionKey, answers } = input
+
+      const questions = await db.quizQuestion.findMany({
+        where: {
+          fileId,
+          chapterNumber,
+          id: { in: answers.map(a => a.questionId) },
+        },
+      })
+
+      const gradedAnswers = answers.map(answer => {
+        const question = questions.find(q => q.id === answer.questionId)
+        const isCorrect = question?.correctAnswer === answer.selectedAnswer
+        
+        return {
+          questionId: answer.questionId,
+          selectedAnswer: answer.selectedAnswer,
+          correctAnswer: question?.correctAnswer,
+          isCorrect,
+          topicCovered: question?.topicCovered,
+        }
+      })
+
+      const score = gradedAnswers.filter(a => a.isCorrect).length
+      const passed = score >= 6
+
+      const weakTopics = gradedAnswers
+        .filter(a => !a.isCorrect)
+        .map(a => a.topicCovered)
+        .filter((topic, index, self) => topic && self.indexOf(topic) === index) as string[]
+
+      const attempt = await db.quizAttempt.create({
+        data: {
+          fileId,
+          chapterNumber,
+          sessionKey,
+          score,
+          totalQuestions: answers.length,
+          answers: gradedAnswers,
+          weakTopics,
+          passed,
+        },
+      })
+
+      const learningState = await db.learningState.findUnique({
+        where: { sessionKey },
+      })
+
+      if (passed) {
+        await db.learningState.update({
+          where: { sessionKey },
+          data: {
+            chaptersCompleted: [...(learningState?.chaptersCompleted || []), chapterNumber],
+            quizzesPassed: [...(learningState?.quizzesPassed || []), chapterNumber],
+            currentChapter: chapterNumber + 1,
+            currentTopic: 1,
+            learningPhase: 'introduction',
+            needsReview: false,
+            messageCount: 0,
+          },
+        })
+      } else {
+        await db.learningState.update({
+          where: { sessionKey },
+          data: {
+            learningPhase: 'review',
+            needsReview: true,
+            reviewTopics: weakTopics,
+          },
+        })
+      }
+
+      return {
+        score,
+        totalQuestions: answers.length,
+        passed,
+        weakTopics,
+        gradedAnswers,
+        attempt,
+      }
+    }),
+
+  // Update learning phase
+  updateLearningPhase: publicProcedure
+    .input(z.object({
+      sessionKey: z.string(),
+      phase: z.string(),
+      incrementMessageCount: z.boolean().optional(),
+    }))
+    .mutation(async ({ input }) => {
+      const updateData: any = {
+        learningPhase: input.phase,
+        lastInteraction: new Date(),
+      }
+
+      if (input.incrementMessageCount) {
+        const state = await db.learningState.findUnique({
+          where: { sessionKey: input.sessionKey },
+        })
+        updateData.messageCount = (state?.messageCount || 0) + 1
+      }
+
+      return await db.learningState.update({
+        where: { sessionKey: input.sessionKey },
+        data: updateData,
+      })
+    }),
+
+  // Get file analytics
   getFileAnalytics: publicProcedure
     .input(z.object({ fileId: z.string() }))
     .query(async ({ input }) => {
@@ -303,12 +513,10 @@ export const appRouter = router({
 
       if (!file) throw new TRPCError({ code: 'NOT_FOUND' })
 
-      // If chapters already extracted, return them
       if (file.chapters.length > 0) {
         return file.chapters
       }
 
-      // Download and extract chapters
       const response = await fetch(file.url)
       if (!response.ok) {
         throw new TRPCError({ 
@@ -321,7 +529,6 @@ export const appRouter = router({
       const extractor = new ChapterExtractor()
       const { chapters, fullText } = await extractor.extractChaptersFromPDF(buffer)
 
-      // Save chapters to database
       const savedChapters = await Promise.all(
         chapters.map(async (chapter) => {
           const content = extractor.extractChapterContent(fullText, chapter)
@@ -379,19 +586,17 @@ export const appRouter = router({
       return chapter
     }),
 
-  // Learning session endpoints
+  // Learning session endpoints (legacy - can be removed if not used)
   createOrGetSession: publicProcedure
     .input(z.object({ 
       fileId: z.string(),
       sessionKey: z.string()
     }))
     .mutation(async ({ input }) => {
-      // Try to find existing session
       let session = await db.learningSession.findUnique({
         where: { sessionKey: input.sessionKey }
       })
 
-      // Create new session if doesn't exist
       if (!session) {
         session = await db.learningSession.create({
           data: {
