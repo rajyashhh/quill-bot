@@ -13,11 +13,11 @@ interface MessagesProps {
 }
 
 const Messages = ({ fileId }: MessagesProps) => {
-  const { isLoading: isAiThinking } = useContext(ChatContext)
+  const { isLoading: isAiThinking, addMessage, isNewSession } = useContext(ChatContext)
 
   // ============ UPDATED: Get session key from storage ============
   const [sessionKey, setSessionKey] = useState<string>('')
-  
+
   useEffect(() => {
     // Wait a bit for ChatContext to initialize the key
     const checkKey = () => {
@@ -51,7 +51,7 @@ const Messages = ({ fileId }: MessagesProps) => {
   // Debug logs for learning state
   useEffect(() => {
     if (!sessionKey) return // Don't log if no key yet
-    
+
     console.log('=== LEARNING STATE DEBUG ===')
     console.log('📊 Learning State:', learningState)
     console.log('📈 Message Count:', learningState?.messageCount)
@@ -111,14 +111,14 @@ const Messages = ({ fileId }: MessagesProps) => {
   // ============ UPDATED: Check if quiz should be shown ============
   useEffect(() => {
     if (!sessionKey || !learningState) return // Wait for data
-    
+
     console.log('🎯 Quiz Trigger Check:')
     console.log('   - Session Key:', sessionKey)
     console.log('   - Learning Phase:', learningState.learningPhase)
     console.log('   - Message Count:', learningState.messageCount)
     console.log('   - Should Trigger:', learningState.learningPhase === 'quiz-ready')
     console.log('   - Current showQuiz state:', showQuiz)
-    
+
     if (learningState.learningPhase === 'quiz-ready') {
       console.log('✅ QUIZ TRIGGERED!')
       console.log('   - Setting chapter to:', learningState.currentChapter)
@@ -128,7 +128,25 @@ const Messages = ({ fileId }: MessagesProps) => {
       console.log('⏳ Waiting for quiz trigger... (count: ' + learningState.messageCount + '/8)')
     }
   }, [learningState, sessionKey]) // Removed showQuiz from deps
-  // ============ END UPDATED ============
+
+
+  // ============ NEW: Proactive Session Start ============
+  const hasStartedSession = useRef(false)
+
+  useEffect(() => {
+    // triggers when valid session, loading finished...
+    if (sessionKey && !isLoading && messages && !hasStartedSession.current) {
+      // Only trigger if:
+      // 1. It's a completely new session (new tab/window)
+      // 2. OR the history is completely empty (fresh file)
+      if (isNewSession || messages.length === 0) {
+        console.log('🚀 [Messages] Starting new session automatically!')
+        hasStartedSession.current = true
+        addMessage('[START_SESSION]')
+      }
+    }
+  }, [sessionKey, isLoading, messages, addMessage, isNewSession])
+  // ============ END NEW ============
 
   // Show loading if no session key yet
   if (!sessionKey) {

@@ -1,7 +1,7 @@
-import Dashboard from '@/components/Dashboard'
+import DashboardSubjects from '@/components/DashboardSubjects'
 
 const Page = () => {
-  return <Dashboard />
+  return <DashboardSubjects />
 }
 
 export default Page

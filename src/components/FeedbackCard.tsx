@@ -29,6 +29,7 @@ export default function FeedbackCard({ feedback }: FeedbackCardProps) {
     feedback.correctedResponse || ''
   )
   const { toast } = useToast()
+  const utils = trpc.useContext()
 
   const { mutate: updateFeedback, isLoading } = trpc.updateMessageFeedback.useMutation({
     onSuccess: () => {
@@ -59,9 +60,8 @@ export default function FeedbackCard({ feedback }: FeedbackCardProps) {
 
   return (
     <div
-      className={`border rounded-lg p-5 ${
-        isNegative ? 'border-red-200 bg-red-50/30' : 'border-green-200 bg-green-50/30'
-      }`}
+      className={`border rounded-lg p-5 ${isNegative ? 'border-red-200 bg-red-50/30' : 'border-green-200 bg-green-50/30'
+        }`}
     >
       {/* Feedback Header */}
       <div className="flex items-start justify-between mb-4">

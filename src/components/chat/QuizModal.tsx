@@ -102,15 +102,15 @@ export default function QuizModal({ fileId, chapterNumber, sessionKey, onClose }
             ) : (
               <XCircle className="h-16 w-16 text-orange-500 mx-auto mb-4" />
             )}
-            
+
             <h2 className="text-3xl font-bold mb-2">
               {results.passed ? 'Excellent Work!' : 'Keep Practicing!'}
             </h2>
-            
+
             <div className="text-5xl font-bold text-blue-600 my-6">
               {results.score}/{results.totalQuestions}
             </div>
-            
+
             {!results.passed && results.weakTopics?.length > 0 && (
               <div className="bg-orange-50 border border-orange-200 rounded-lg p-4 mt-4">
                 <h3 className="font-semibold text-orange-900 mb-2">Topics to Review:</h3>
@@ -121,7 +121,7 @@ export default function QuizModal({ fileId, chapterNumber, sessionKey, onClose }
                 </ul>
               </div>
             )}
-            
+
             <Button onClick={onClose} className="w-full mt-6">
               {results.passed ? 'Continue to Next Chapter' : 'Review Topics'}
             </Button>
@@ -131,7 +131,7 @@ export default function QuizModal({ fileId, chapterNumber, sessionKey, onClose }
     )
   }
 
-  const question = questions[currentQuestion]
+  const question = questions[currentQuestion] as any
 
   const handleAnswer = (answer: string) => {
     setAnswers({ ...answers, [question.id]: answer })
@@ -185,20 +185,19 @@ export default function QuizModal({ fileId, chapterNumber, sessionKey, onClose }
         {/* Question */}
         <div className="mb-6">
           <h3 className="text-lg font-medium mb-4">{question.question}</h3>
-          
+
           <div className="space-y-3">
-            {question.options.map((option: string, index: number) => {
+            {(question.options as string[]).map((option: string, index: number) => {
               const isSelected = answers[question.id] === option
-              
+
               return (
                 <button
                   key={index}
                   onClick={() => handleAnswer(option)}
-                  className={`w-full text-left p-4 rounded-lg border-2 transition-all ${
-                    isSelected
-                      ? 'border-blue-500 bg-blue-50'
-                      : 'border-zinc-200 hover:border-zinc-300'
-                  }`}
+                  className={`w-full text-left p-4 rounded-lg border-2 transition-all ${isSelected
+                    ? 'border-blue-500 bg-blue-50'
+                    : 'border-zinc-200 hover:border-zinc-300'
+                    }`}
                 >
                   <span className="font-medium">{String.fromCharCode(65 + index)}.</span> {option}
                 </button>
@@ -216,7 +215,7 @@ export default function QuizModal({ fileId, chapterNumber, sessionKey, onClose }
           >
             Previous
           </Button>
-          
+
           <Button
             onClick={handleNext}
             disabled={!answers[question.id] || isSubmitting}

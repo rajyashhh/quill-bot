@@ -11,19 +11,27 @@ import { trpc } from '@/app/_trpc/client'
 import { INFINITE_QUERY_LIMIT } from '@/config/infinite-query'
 
 type StreamResponse = {
-  addMessage: () => void
+  addMessage: (customMessage?: string) => void
   message: string
   handleInputChange: (
     event: React.ChangeEvent<HTMLTextAreaElement>
   ) => void
   isLoading: boolean
+  sessionKey: string
+  isSmartCompletionDetected: boolean
+  resetSmartCompletion: () => void
+  isNewSession: boolean
 }
 
 export const ChatContext = createContext<StreamResponse>({
-  addMessage: () => {},
+  addMessage: () => { },
   message: '',
-  handleInputChange: () => {},
+  handleInputChange: () => { },
   isLoading: false,
+  sessionKey: '',
+  isSmartCompletionDetected: false,
+  resetSmartCompletion: () => { },
+  isNewSession: false,
 })
 
 interface Props {
@@ -37,6 +45,7 @@ export const ChatContextProvider = ({
 }: Props) => {
   const [message, setMessage] = useState<string>('')
   const [isLoading, setIsLoading] = useState<boolean>(false)
+  const [isSmartCompletionDetected, setIsSmartCompletionDetected] = useState<boolean>(false)
 
   const utils = trpc.useContext()
 
@@ -46,6 +55,7 @@ export const ChatContextProvider = ({
 
   // ============ NEW: Initialize and manage session key ============
   const [sessionKey, setSessionKey] = useState<string>('')
+  const [isNewSession, setIsNewSession] = useState<boolean>(false)
 
   useEffect(() => {
     // Get or create session key
@@ -53,11 +63,13 @@ export const ChatContextProvider = ({
     if (existingKey) {
       console.log('🔑 [ChatContext] Using existing session key:', existingKey)
       setSessionKey(existingKey)
+      setIsNewSession(false)
     } else {
       const newKey = `session-${Date.now()}`
       sessionStorage.setItem('sessionKey', newKey)
       console.log('🔑 [ChatContext] Created new session key:', newKey)
       setSessionKey(newKey)
+      setIsNewSession(true)
     }
   }, [])
   // ============ END NEW ============
@@ -71,7 +83,7 @@ export const ChatContextProvider = ({
       sessionKey: string // ADDED
     }) => {
       console.log('📤 [ChatContext] Sending message with session:', sessionKey)
-      
+
       const response = await fetch('/api/message', {
         method: 'POST',
         headers: {
@@ -100,8 +112,8 @@ export const ChatContextProvider = ({
 
       console.log('📊 [ChatContext] Learning state:', { learningPhase, shouldQuiz, messageCount })
 
-      return { 
-        body: response.body, 
+      return {
+        body: response.body,
         images,
         learningPhase,
         shouldQuiz,
@@ -224,12 +236,18 @@ export const ChatContextProvider = ({
                       if (message.id === 'ai-response') {
                         return {
                           ...message,
-                          text: accResponse,
+                          text: accResponse.replace('[TOPIC_COMPLETED]', ''),
                         }
                       }
                       return message
                     }
                   )
+                }
+
+                // CHECK FOR SMART COMPLETION
+                if (accResponse.includes('[TOPIC_COMPLETED]') && !isSmartCompletionDetected) {
+                  console.log('🤖 [ChatContext] Smart completion detected!')
+                  setIsSmartCompletionDetected(true)
                 }
 
                 return {
@@ -275,15 +293,21 @@ export const ChatContextProvider = ({
     setMessage(e.target.value)
   }
 
+  const resetSmartCompletion = () => setIsSmartCompletionDetected(false)
+
   // ============ UPDATED: Pass session key ============
-  const addMessage = () => {
+  const addMessage = (customMessage?: string) => {
     if (!sessionKey) {
       console.error('❌ [ChatContext] No session key available!')
       return
     }
+    const messageToSend = customMessage || message
+    if (!messageToSend) return
+
     console.log('📨 [ChatContext] Adding message with session:', sessionKey)
-    sendMessage({ message, sessionKey })
+    sendMessage({ message: messageToSend, sessionKey })
   }
+  // ============ END UPDATE ============
   // ============ END UPDATE ============
 
   return (
@@ -293,6 +317,10 @@ export const ChatContextProvider = ({
         message,
         handleInputChange,
         isLoading,
+        sessionKey,
+        isSmartCompletionDetected,
+        resetSmartCompletion,
+        isNewSession,
       }}>
       {children}
     </ChatContext.Provider>

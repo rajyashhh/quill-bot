@@ -3,6 +3,7 @@
 import { trpc } from '@/app/_trpc/client'
 import ChatInput from './ChatInput'
 import Messages from './Messages'
+import TopicCompletionButton from './TopicCompletionButton'
 import { ChevronLeft, Loader2, XCircle } from 'lucide-react'
 import Link from 'next/link'
 import { buttonVariants } from '../ui/button'
@@ -18,7 +19,7 @@ const ChatWrapper = ({
   fileId,
 }: ChatWrapperProps) => {
   const [selectedVoiceId, setSelectedVoiceId] = useState<string>('female1')
-  
+
   const { data, isLoading } =
     trpc.getFileUploadStatus.useQuery(
       {
@@ -27,7 +28,7 @@ const ChatWrapper = ({
       {
         refetchInterval: (data) =>
           data?.status === 'SUCCESS' ||
-          data?.status === 'FAILED'
+            data?.status === 'FAILED'
             ? false
             : 500,
       }
@@ -103,10 +104,11 @@ const ChatWrapper = ({
   return (
     <ChatContextProvider fileId={fileId}>
       <div className='relative min-h-full bg-zinc-50 flex divide-y divide-zinc-200 flex-col justify-between gap-2'>
-        <div className='absolute top-0 right-0 p-4 z-10'>
+        <div className='absolute top-0 right-0 p-4 z-10 flex items-center gap-4'>
+          <TopicCompletionButton fileId={fileId} />
           <VoiceSettings onVoiceChange={setSelectedVoiceId} />
         </div>
-        
+
         <div className='flex-1 justify-between flex flex-col mb-28 pt-14'>
           <Messages fileId={fileId} />
         </div>

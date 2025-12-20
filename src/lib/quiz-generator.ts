@@ -12,34 +12,37 @@ interface GenerateQuizOptions {
   chapterTitle: string
   topics: string[]
   count?: number
+  retry?: boolean
 }
 
 export async function generateChapterQuiz(options: GenerateQuizOptions) {
-  const { 
-    fileId, 
-    chapterNumber, 
-    chapterContent, 
+  const {
+    fileId,
+    chapterNumber,
+    chapterContent,
     chapterTitle,
-    topics, 
-    count = 10 
+    topics,
+    count = 10,
+    retry = false
   } = options
 
-  console.log(`🎯 [QuizGen] Generating ${count} questions for Chapter ${chapterNumber}: ${chapterTitle}`)
+  console.log(`🎯 [QuizGen] Generating ${count} questions for Chapter ${chapterNumber}: ${chapterTitle} (Retry: ${retry})`)
 
   const prompt = `You are an expert educator creating a quiz based on this textbook chapter.
+${retry ? 'IMPORTANT: This is a RETRY attempt. Create COMPLETELY NEW and DIFFERENT questions from common ones. Focus on deeper understanding to test the student.' : ''}
 
 CHAPTER: ${chapterTitle}
-TOPICS COVERED: ${topics.join(', ')}
+AVAILABLE TOPICS: ${topics.join(', ')}
 
 CHAPTER CONTENT:
-${chapterContent.substring(0, 8000)}
+${chapterContent.substring(0, 25000)}
 
 Create ${count} multiple-choice questions that:
 1. Test key concepts and understanding (not just memorization)
 2. Have 4 options each (A, B, C, D)
 3. Include clear explanations for correct answers
-4. Cover different topics from the chapter
-5. Are appropriate difficulty for students learning this material
+4. Cover ALL topics listed above evenly (balanced distribution)
+5. Are challenging and appropriate for a comprehensive chapter exam
 6. Reference specific page numbers or concepts from the content
 
 Return ONLY a valid JSON array with this EXACT structure (no markdown, no extra text):
@@ -48,15 +51,15 @@ Return ONLY a valid JSON array with this EXACT structure (no markdown, no extra 
     "question": "What is the primary purpose of the wing?",
     "options": ["Generate lift", "Provide stability", "Store fuel", "House landing gear"],
     "correctAnswer": "Generate lift",
-    "explanation": "Wings generate lift through the pressure difference created by airflow over the curved upper surface and flatter lower surface.",
-    "topicCovered": "Wing Design",
-    "difficulty": "easy"
+    "explanation": "Wings generate lift...",
+    "topicCovered": "Exact String from AVAILABLE TOPICS",
+    "difficulty": "medium"
   }
 ]`
 
   try {
     const response = await openai.chat.completions.create({
-      model: 'gpt-4',
+      model: process.env.OPENAI_MODEL || 'gpt-4-turbo-preview',
       messages: [
         {
           role: 'system',
@@ -67,11 +70,13 @@ Return ONLY a valid JSON array with this EXACT structure (no markdown, no extra 
           content: prompt,
         },
       ],
-      temperature: 0.7,
-      max_tokens: 3000,
+
+      max_completion_tokens: 5000,
     })
 
-    const content = response.choices[0].message.content?.trim() || '[]'
+    const choice = response.choices[0]
+    console.log('🤖 [QuizGen] Finish reason:', choice.finish_reason)
+    const content = choice.message.content?.trim() || '[]'
     console.log('🤖 [QuizGen] Raw response length:', content.length)
 
     // Parse JSON response
@@ -81,7 +86,7 @@ Return ONLY a valid JSON array with this EXACT structure (no markdown, no extra 
     } catch (error) {
       // Try to extract JSON from markdown code blocks
       console.log('⚠️ [QuizGen] Failed to parse, trying to extract from markdown...')
-      const jsonMatch = content.match(/``````/) 
+      const jsonMatch = content.match(/``````/)
       if (jsonMatch) {
         questions = JSON.parse(jsonMatch[1])
       } else {

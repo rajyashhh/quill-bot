@@ -25,16 +25,4 @@ async function downloadFile(url: string, dest: string): Promise<string> {
 
 export const { GET, POST } = createRouteHandler({
   router: ourFileRouter,
-  onUploadComplete: async ({ file }) => {
-    if (file.type === "application/pdf") {
-      const tempDir = path.resolve(process.cwd(), "temp");
-      if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
-      const pdfPath = path.join(tempDir, file.name.replace(/\s+/g, "_"));
-      const fileUrl = file.ufsUrl || file.url;
-      await downloadFile(fileUrl, pdfPath);
-      runOCRInWorker(pdfPath);
-    } else {
-      console.log("[UPLOADTHING] Skipping non-PDF file.");
-    }
-  },
 });

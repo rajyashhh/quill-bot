@@ -20,7 +20,7 @@ export const POST = async (req: NextRequest) => {
         id: fileId,
       },
     })
-    
+
     // Fetch chapters separately to avoid TypeScript errors
     const chapters = await db.chapter.findMany({
       where: {
@@ -36,22 +36,29 @@ export const POST = async (req: NextRequest) => {
 
     if (!file) return new Response('Not found', { status: 404 })
 
-    await db.message.create({
-      data: {
-        text: message,
-        isUserMessage: true,
-        fileId,
-      },
-    })
+    // Check for special "START_SESSION" message
+    const isStartSession = message === '[START_SESSION]'
+
+    if (!isStartSession) {
+      await db.message.create({
+        data: {
+          text: message,
+          isUserMessage: true,
+          fileId,
+        },
+      })
+    } else {
+      console.log('[TUTOR] Received START_SESSION trigger')
+    }
 
     // ============ NEW: AI TUTOR LOGIC ============
     // Get session key from headers OR body
-    const sessionKey = req.headers.get('x-session-key') || 
-                       body.sessionKey || 
-                       `session-${Date.now()}`
-    
+    const sessionKey = req.headers.get('x-session-key') ||
+      body.sessionKey ||
+      `session-${Date.now()}`
+
     console.log('[TUTOR] Using session key:', sessionKey)
-    
+
     // Get or create learning state
     let learningState = await db.learningState.findUnique({
       where: { sessionKey },
@@ -61,42 +68,50 @@ export const POST = async (req: NextRequest) => {
 
     if (!learningState) {
       console.log('[TUTOR] Creating new learning state')
+
+      // Try to recover state from StudentProgress (Analytics) to be smart
+      const progress = await db.studentProgress.findUnique({
+        where: { fileId }
+      })
+
+      const initialChapter = progress?.currentChapter || 1
+      const initialTopic = progress?.currentTopic || 1
+
       learningState = await db.learningState.create({
         data: {
           fileId,
           sessionKey,
-          currentChapter: 1,
-          currentTopic: 1,
-          learningPhase: 'introduction',
-          messageCount: 0, // ADDED: Initialize to 0
+          currentChapter: initialChapter,
+          currentTopic: initialTopic,
+          learningPhase: progress ? 'learning' : 'introduction', // Skip intro if resuming
+          messageCount: 0,
         },
       })
-      console.log('[TUTOR] Created:', learningState)
+      console.log('[TUTOR] Created state (recovered):', learningState)
     }
 
     // Increment message count and update last interaction
     const updatedState = await db.learningState.update({
       where: { sessionKey },
       data: {
-        messageCount: { increment: 1 }, // CHANGED: Use increment instead
+        messageCount: { increment: 1 },
         lastInteraction: new Date(),
       },
     })
 
-    console.log('[TUTOR] Updated message count to:', updatedState.messageCount)
 
+    console.log('[TUTOR] Updated message count to:', updatedState.messageCount)
     // Get current chapter for context
     const currentChapter = chapters.find(ch => ch.chapterNumber === updatedState.currentChapter)
-    const shouldTriggerQuiz = updatedState.messageCount >= 7 // After 7 messages, suggest quiz on 8th
-
-    console.log('[TUTOR] Should trigger quiz?', shouldTriggerQuiz, '(count:', updatedState.messageCount, ')')
-
-    // ============ END NEW LOGIC ============
+    const currentTopic = currentChapter?.topics.find(t => t.topicNumber === updatedState.currentTopic)
+    const isLastTopic = currentTopic && currentChapter && currentTopic.topicNumber === currentChapter.topics.length
+    // We default to false because we now use strict gatekeeping via completeTopic
+    const shouldTriggerQuiz = false
 
     // Check if the query is asking about chapters/topics
     const isChapterQuery = /chapter|topic|section|unit|module/i.test(message)
     const chapterNumberMatch = message.match(/chapter\s*(\d+)/i)
-    
+
     let chapterInfo = ''
     if (isChapterQuery && chapters.length > 0) {
       if (chapterNumberMatch) {
@@ -131,7 +146,12 @@ export const POST = async (req: NextRequest) => {
     const pineconeIndex = pinecone.Index('quill')
 
     // Create embedding for the query
-    const queryEmbedding = await embeddings.embedQuery(message)
+    let queryText = message
+    if (isStartSession) {
+      queryText = `Chapter ${updatedState.currentChapter} ${currentChapter?.title || ''} Topic ${updatedState.currentTopic} ${currentTopic?.title || ''}`
+    }
+
+    const queryEmbedding = await embeddings.embedQuery(queryText)
 
     // Query Pinecone directly
     console.log('[CHAT] Querying Pinecone with namespace:', file.id)
@@ -148,7 +168,7 @@ export const POST = async (req: NextRequest) => {
 
     // Extract the text content from the results with page numbers and image references
     const results = queryResponse.matches?.map((match) => ({
-      pageContent: match.metadata?.text || '',
+      pageContent: (match.metadata?.text as string) || '',
       metadata: {
         pageNumber: match.metadata?.pageNumber,
         score: match.score,
@@ -160,15 +180,15 @@ export const POST = async (req: NextRequest) => {
     })) || []
 
     console.log('[CHAT] Extracted results:', results.length, 'documents')
-    
+
     // Check if we got any OCR results from Pinecone
     const ocrResults = results.filter(r => r.metadata.source === 'OCR')
     const hasOcrResults = ocrResults.length > 0
     const hasGoodOcrContent = ocrResults.some(r => r.pageContent.length > 50)
-    
+
     console.log('[CHAT] OCR results from Pinecone:', ocrResults.length)
     console.log('[CHAT] Has good OCR content:', hasGoodOcrContent)
-    
+
     // If file used OCR but we have poor/no results, add full OCR text as fallback
     let ocrContext = ''
     if (file.usedOCR && file.ocrText) {
@@ -181,7 +201,7 @@ export const POST = async (req: NextRequest) => {
         console.log('[CHAT] Using OCR results from Pinecone')
       }
     }
-    
+
     // Collect all unique image IDs from the results
     const allImageIds = new Set<string>()
     results.forEach(result => {
@@ -192,7 +212,7 @@ export const POST = async (req: NextRequest) => {
         result.metadata.referencedImageIds.forEach((id: string) => allImageIds.add(id))
       }
     })
-    
+
     // Fetch image data if any images are referenced
     let images: any[] = []
     if (allImageIds.size > 0) {
@@ -214,7 +234,7 @@ export const POST = async (req: NextRequest) => {
       })
       console.log('[CHAT] Found', images.length, 'images')
     }
-    
+
     // Format context with page numbers
     const contextWithPages = results
       .filter(r => r.pageContent.trim().length > 0) // Filter out empty content
@@ -224,7 +244,7 @@ export const POST = async (req: NextRequest) => {
         return `${pageNum}${sourceTag} ${r.pageContent}`
       }).join('\n\n')
 
-    const prevMessages = await db.message.findMany({
+    const prevMessages = isStartSession ? [] : await db.message.findMany({
       where: {
         fileId,
       },
@@ -241,46 +261,133 @@ export const POST = async (req: NextRequest) => {
       content: msg.text,
     }))
 
+
     // ============ NEW: BUILD AI TUTOR SYSTEM PROMPT ============
     let tutorPrompt = ''
-    const currentTopic = currentChapter?.topics.find(t => t.topicNumber === updatedState.currentTopic)
-    
+
+
     if (updatedState.learningPhase === 'introduction') {
-      tutorPrompt = `\n\n🎓 AI TUTOR MODE: INTRODUCTION
-You are introducing Chapter ${updatedState.currentChapter}: ${currentChapter?.title}.
-Welcome the student and briefly explain what they'll learn in this chapter.
-Keep it warm and encouraging (2-3 sentences).
-After this message, you'll help them learn the topics.`
-      
+      // Build full chapter list for the overview
+      const allChaptersList = chapters.map(c => `- Chapter ${c.chapterNumber}: ${c.title}`).join('\n')
+
+      if (updatedState.currentChapter === 1) {
+        // BOOK INTRODUCTION (First time)
+        tutorPrompt = `\n\n🎓 AI TUTOR MODE: INTRODUCTION
+You are introducing the book "${file.name}".
+Available Chapters:
+${allChaptersList}
+
+Your Goal:
+1.  **Book Overview**: Briefly summarize what this whole book is about (1-2 sentences).
+2.  **Roadmap**: Mention that there are ${chapters.length} chapters to cover.
+3.  **Approve Start**: Introduce Chapter 1 (${updatedState.currentChapter}: ${currentChapter?.title}) and ask if they are ready to begin.
+Keep it structured and encouraging.
+CRITICAL: Do NOT use the "[TOPIC_COMPLETED]" token in this phase.`
+      } else {
+        // CHAPTER INTRODUCTION (Subsequent chapters)
+        // Build topic list for this chapter
+        const topicList = currentChapter?.topics.map(t => `- ${t.title}`).join('\n') || 'Topics not listed.'
+
+        tutorPrompt = `\n\n🎓 AI TUTOR MODE: CHAPTER INTRODUCTION
+Status: Student has just unlocked Chapter ${updatedState.currentChapter}: ${currentChapter?.title}.
+
+Your Goal:
+1.  **Congratulate**: Praise them for completing the previous chapter.
+2.  **Chapter Preview**: Briefly explain what Chapter ${updatedState.currentChapter} covers.
+3.  **Roadmap**: List the topics:
+${topicList}
+4.  **Start**: Ask if they are ready to begin the first topic.
+CRITICAL: Do NOT use the "[TOPIC_COMPLETED]" token in this phase.`
+      }
+
       // Update phase to learning after introduction
       await db.learningState.update({
         where: { sessionKey },
         data: { learningPhase: 'learning' },
       })
-    } 
+    }
     else if (updatedState.learningPhase === 'learning') {
-      tutorPrompt = `\n\n🎓 AI TUTOR MODE: TEACHING
+      if (isStartSession) {
+        tutorPrompt = `\n\n🎓 AI TUTOR MODE: RESUMING SESSION
 Current Chapter: ${updatedState.currentChapter} - ${currentChapter?.title}
 Current Topic: ${currentTopic?.title || 'Overview'}
+
+Responsibility:
+1. Welcome the student back warmly.
+2. Summarize where they left off (Topic ${updatedState.currentTopic}: ${currentTopic?.title}).
+3. Ask if they are ready to continue.`
+      } else {
+        const totalTopics = currentChapter?.topics.length || 0
+        const remainingTopicsCount = totalTopics - updatedState.currentTopic
+
+        tutorPrompt = `\n\n🎓 AI TUTOR MODE: TEACHING
+Current Chapter: ${updatedState.currentChapter} - ${currentChapter?.title}
+Current Topic: ${currentTopic?.title || 'Overview'}
+Topics Remaining in Chapter: ${remainingTopicsCount}
 Message Count: ${updatedState.messageCount}/8
 
 Teaching Guidelines:
-1. Answer questions clearly and concisely (under 150 words)
-2. Use examples and analogies when helpful
-3. Check understanding with follow-up questions
-4. Cite page numbers from the context
-${shouldTriggerQuiz ? '\n⚠️ IMPORTANT: After answering this question, suggest: "Great progress! I think you\'re ready for a quick quiz to test your understanding of this chapter. Would you like to take it now?"' : ''}
-${updatedState.messageCount >= 5 ? '\n💡 TIP: You\'ve covered quite a bit. Consider checking understanding more frequently.' : ''}`
-    } 
+1. Answer questions clearly and concisely
+2. Use examples and cite page numbers
+3. CRITICAL: Analyze understanding.
+   - ONLY IF mastered, start with: "[TOPIC_COMPLETED]"
+   - IF student asks to SKIP to next chapter:
+     - CHECK "Topics Remaining".
+     - If > 0, REFUSE. Say: "We need to cover ${remainingTopicsCount} more topics first."
+     - Do NOT emit [TOPIC_COMPLETED] for refused skips.`
+      }
+    }
     else if (updatedState.learningPhase === 'review') {
+      // Fetch latest quiz attempt for context
+      const lastAttempt = await db.quizAttempt.findFirst({
+        where: {
+          sessionKey,
+          chapterNumber: updatedState.currentChapter
+        },
+        orderBy: { createdAt: 'desc' }
+      })
+
+      let quizContext = ''
+      if (lastAttempt && Array.isArray(lastAttempt.answers)) {
+        quizContext = '\n\nQUIZ RESULTS CONTEXT:\n'
+        // @ts-ignore
+        lastAttempt.answers.forEach((ans: any, i: number) => {
+          const status = ans.isCorrect ? '✅ CORRET' : '❌ WRONG'
+          quizContext += `Q${i + 1}: ${status}\n`
+          if (!ans.isCorrect) {
+            quizContext += `   - Your Answer: ${ans.selectedAnswer}\n`
+            quizContext += `   - Correct Answer: ${ans.correctAnswer}\n`
+            quizContext += `   - Topic: ${ans.topicCovered}\n`
+          }
+        })
+      }
+
       tutorPrompt = `\n\n🎓 AI TUTOR MODE: REVIEW
-The student needs help with these topics: ${updatedState.reviewTopics.join(', ')}
+The student just FAILED the quiz for Chapter ${updatedState.currentChapter}.
+Weak Topics: ${updatedState.reviewTopics.join(', ')}
+
+${quizContext}
 
 Review Guidelines:
-1. Focus on clarifying these specific weak areas
-2. Provide concrete examples and simpler explanations
-3. Break down complex concepts into smaller parts
-4. After thorough review, suggest retaking the quiz`
+1.  **Analyze Mistakes**: Specifically reference the questions they got wrong (e.g., "I noticed you struggled with Question 3 regarding...").
+2.  **Explain Concepts**: Don't just give the answer; explain the underlying concept they missed.
+3.  **Encourage**: Remind them it's part of learning.
+4.  **Retake**: When you feel they understand the weak topics, explicitly suggested retaking the quiz.
+
+CRITICAL GATEKEEPING:
+- **Refuse Progression**: If the student asks to move to the next chapter (Chapter ${updatedState.currentChapter + 1}), REFUSE.
+- **redirect**: Say "We need to fix these weak topics and pass the quiz first."
+- **NO TOKENS**: Do NOT emit [TOPIC_COMPLETED] under any circumstances in this phase. The only way forward is retaking the quiz.`
+    }
+    else if (updatedState.learningPhase === 'quiz-ready') {
+      tutorPrompt = `\n\n🎓 AI TUTOR MODE: GATEKEEPER
+Status: Chapter ${updatedState.currentChapter} COMPLETED.
+Goal: Student MUST pass the quiz to unlock Chapter ${updatedState.currentChapter + 1}.
+
+Guidelines:
+1.  **Refuse Movement**: If they ask to teaching Chapter ${updatedState.currentChapter + 1}, REFUSE.
+2.  **Redirect**: Say "You've finished Chapter ${updatedState.currentChapter}! To unlock the next chapter, you need to pass the quiz."
+3.  **Encourage**: Tell them they are ready and to click the "Take Quiz" button.`
     }
     // ============ END NEW LOGIC ============
 
@@ -312,10 +419,10 @@ Core Responsibilities:
   
   PREVIOUS CONVERSATION:
   ${formattedPrevMessages.map((message) => {
-    if (message.role === 'user')
-      return `User: ${message.content}\n`
-    return `Assistant: ${message.content}\n`
-  })}
+            if (message.role === 'user')
+              return `User: ${message.content}\n`
+            return `Assistant: ${message.content}\n`
+          })}
   
   \n----------------\n
   
@@ -340,17 +447,17 @@ Core Responsibilities:
     const stream = new ReadableStream({
       async start(controller) {
         let fullResponse = ''
-        
+
         try {
           for await (const chunk of response) {
             const content = chunk.choices[0]?.delta?.content || ''
             fullResponse += content
-            
+
             // Encode and send the chunk
             const bytes = new TextEncoder().encode(content)
             controller.enqueue(bytes)
           }
-          
+
           // Save the complete message after streaming is done
           await db.message.create({
             data: {
@@ -360,18 +467,17 @@ Core Responsibilities:
             },
           })
 
-          // ============ NEW: CHECK IF QUIZ SHOULD BE TRIGGERED ============
-          console.log('[TUTOR] Checking quiz trigger...')
-          console.log('[TUTOR] Should trigger?', shouldTriggerQuiz)
-          console.log('[TUTOR] Response mentions quiz?', fullResponse.toLowerCase().includes('quiz'))
-          
-          if (shouldTriggerQuiz && fullResponse.toLowerCase().includes('quiz')) {
-            console.log('[TUTOR] ✅ TRIGGERING QUIZ!')
-            await db.learningState.update({
-              where: { sessionKey },
-              data: { learningPhase: 'quiz-ready' },
-            })
+          // ============ NEW: CHECK SMART COMPLETION ============
+          console.log('[TUTOR] Checking smart completion...')
+          const isTopicCompleted = fullResponse.includes('[TOPIC_COMPLETED]')
+
+          if (isTopicCompleted && updatedState.learningPhase === 'learning') {
+            console.log('[TUTOR] ✅ AI detected topic completion!')
+            // We don't automatically update state here because we want the frontend to handle the transition
+            // (showing a button or toast) to give user control.
+            // The frontend will see the token in the stream and act accordingly.
           }
+          // ============ END NEW LOGIC ============
           // ============ END NEW LOGIC ============
         } catch (error) {
           console.error('[TUTOR] Error:', error)

@@ -97,15 +97,15 @@ export default function AnalyticsClient({ fileId }: AnalyticsClientProps) {
             {completedChapters}/{totalChapters}
           </p>
           <p className="text-xs text-zinc-500 mt-1">
-            {totalChapters > 0
-              ? Math.round((completedChapters / totalChapters) * 100)
+            {Number(totalChapters) > 0
+              ? Math.round((Number(completedChapters) / Number(totalChapters)) * 100)
               : 0}% complete
           </p>
           <div className="mt-3 h-2 bg-zinc-200 rounded-full overflow-hidden">
             <div
               className="h-full bg-purple-500 transition-all duration-500"
               style={{
-                width: `${totalChapters > 0 ? (completedChapters / totalChapters) * 100 : 0}%`,
+                width: `${Number(totalChapters) > 0 ? (Number(completedChapters) / Number(totalChapters)) * 100 : 0}%`,
               }}
             />
           </div>
@@ -170,7 +170,14 @@ export default function AnalyticsClient({ fileId }: AnalyticsClientProps) {
           <h2 className="text-xl font-semibold mb-6">Recent Feedback</h2>
           <div className="space-y-6">
             {feedbackWithContext.slice(0, 10).map((fb) => (
-              <FeedbackCard key={fb.id} feedback={fb} />
+              <FeedbackCard
+                key={fb.id}
+                feedback={{
+                  ...fb,
+                  createdAt: new Date(fb.createdAt),
+                  Message: { ...fb.Message, createdAt: new Date(fb.Message.createdAt) },
+                }}
+              />
             ))}
           </div>
         </div>
