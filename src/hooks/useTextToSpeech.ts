@@ -31,16 +31,17 @@ export const useTextToSpeech = (): TextToSpeechHook => {
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
   const { getVoiceForSynthesis } = useVoiceSettings()
 
+  // FIX: Add dependency array to prevent infinite loop
   useEffect(() => {
     if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
       setIsSupported(true)
-      
+
       const loadVoices = () => {
         const availableVoices = window.speechSynthesis.getVoices()
         setVoices(availableVoices)
-        
+
         // Use the voice from settings
-        if (availableVoices.length > 0) {
+        if (availableVoices.length > 0 && !selectedVoice) {
           const preferredVoice = getVoiceForSynthesis(availableVoices)
           setSelectedVoice(preferredVoice)
         }
@@ -48,8 +49,13 @@ export const useTextToSpeech = (): TextToSpeechHook => {
 
       loadVoices()
       window.speechSynthesis.onvoiceschanged = loadVoices
+      
+      // Cleanup
+      return () => {
+        window.speechSynthesis.onvoiceschanged = null
+      }
     }
-  }, [getVoiceForSynthesis])
+  }, []) // FIXED: Empty dependency array - only run once on mount
 
   const speak = (text: string) => {
     if (!isSupported || !text) return
@@ -58,24 +64,24 @@ export const useTextToSpeech = (): TextToSpeechHook => {
     window.speechSynthesis.cancel()
 
     const utterance = new SpeechSynthesisUtterance(text)
-    
+
     if (selectedVoice) {
       utterance.voice = selectedVoice
     }
-    
+
     utterance.rate = rate
     utterance.pitch = pitch
-    
+
     utterance.onstart = () => {
       setIsSpeaking(true)
       setIsPaused(false)
     }
-    
+
     utterance.onend = () => {
       setIsSpeaking(false)
       setIsPaused(false)
     }
-    
+
     utterance.onerror = (event) => {
       console.error('Speech synthesis error:', event)
       setIsSpeaking(false)
@@ -120,6 +126,6 @@ export const useTextToSpeech = (): TextToSpeechHook => {
     rate,
     setRate,
     pitch,
-    setPitch
+    setPitch,
   }
 }

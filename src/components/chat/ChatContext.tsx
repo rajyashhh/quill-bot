@@ -3,6 +3,7 @@ import {
   createContext,
   useRef,
   useState,
+  useEffect,
 } from 'react'
 import { useToast } from '../ui/use-toast'
 import { useMutation } from '@tanstack/react-query'
@@ -10,19 +11,27 @@ import { trpc } from '@/app/_trpc/client'
 import { INFINITE_QUERY_LIMIT } from '@/config/infinite-query'
 
 type StreamResponse = {
-  addMessage: () => void
+  addMessage: (customMessage?: string) => void
   message: string
   handleInputChange: (
     event: React.ChangeEvent<HTMLTextAreaElement>
   ) => void
   isLoading: boolean
+  sessionKey: string
+  isSmartCompletionDetected: boolean
+  resetSmartCompletion: () => void
+  isNewSession: boolean
 }
 
 export const ChatContext = createContext<StreamResponse>({
-  addMessage: () => {},
+  addMessage: () => { },
   message: '',
-  handleInputChange: () => {},
+  handleInputChange: () => { },
   isLoading: false,
+  sessionKey: '',
+  isSmartCompletionDetected: false,
+  resetSmartCompletion: () => { },
+  isNewSession: false,
 })
 
 interface Props {
@@ -36,6 +45,7 @@ export const ChatContextProvider = ({
 }: Props) => {
   const [message, setMessage] = useState<string>('')
   const [isLoading, setIsLoading] = useState<boolean>(false)
+  const [isSmartCompletionDetected, setIsSmartCompletionDetected] = useState<boolean>(false)
 
   const utils = trpc.useContext()
 
@@ -43,17 +53,47 @@ export const ChatContextProvider = ({
 
   const backupMessage = useRef('')
 
+  // ============ NEW: Initialize and manage session key ============
+  const [sessionKey, setSessionKey] = useState<string>('')
+  const [isNewSession, setIsNewSession] = useState<boolean>(false)
+
+  useEffect(() => {
+    // Get or create session key
+    const existingKey = sessionStorage.getItem('sessionKey')
+    if (existingKey) {
+      console.log('🔑 [ChatContext] Using existing session key:', existingKey)
+      setSessionKey(existingKey)
+      setIsNewSession(false)
+    } else {
+      const newKey = `session-${Date.now()}`
+      sessionStorage.setItem('sessionKey', newKey)
+      console.log('🔑 [ChatContext] Created new session key:', newKey)
+      setSessionKey(newKey)
+      setIsNewSession(true)
+    }
+  }, [])
+  // ============ END NEW ============
+
   const { mutate: sendMessage } = useMutation({
     mutationFn: async ({
       message,
+      sessionKey, // ADDED
     }: {
       message: string
+      sessionKey: string // ADDED
     }) => {
+      console.log('📤 [ChatContext] Sending message with session:', sessionKey)
+
       const response = await fetch('/api/message', {
         method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-session-key': sessionKey, // ADDED
+        },
         body: JSON.stringify({
           fileId,
           message,
+          sessionKey, // ADDED
         }),
       })
 
@@ -65,7 +105,20 @@ export const ChatContextProvider = ({
       const imagesData = response.headers.get('X-Images-Data')
       const images = imagesData ? JSON.parse(imagesData) : []
 
-      return { body: response.body, images }
+      // ADDED: Extract learning state from headers
+      const learningPhase = response.headers.get('X-Learning-Phase')
+      const shouldQuiz = response.headers.get('X-Should-Quiz') === 'true'
+      const messageCount = response.headers.get('X-Message-Count')
+
+      console.log('📊 [ChatContext] Learning state:', { learningPhase, shouldQuiz, messageCount })
+
+      return {
+        body: response.body,
+        images,
+        learningPhase,
+        shouldQuiz,
+        messageCount,
+      }
     },
     onMutate: async ({ message }) => {
       backupMessage.current = message
@@ -183,12 +236,18 @@ export const ChatContextProvider = ({
                       if (message.id === 'ai-response') {
                         return {
                           ...message,
-                          text: accResponse,
+                          text: accResponse.replace('[TOPIC_COMPLETED]', ''),
                         }
                       }
                       return message
                     }
                   )
+                }
+
+                // CHECK FOR SMART COMPLETION
+                if (accResponse.includes('[TOPIC_COMPLETED]') && !isSmartCompletionDetected) {
+                  console.log('🤖 [ChatContext] Smart completion detected!')
+                  setIsSmartCompletionDetected(true)
                 }
 
                 return {
@@ -204,6 +263,14 @@ export const ChatContextProvider = ({
           }
         )
       }
+
+      // ============ NEW: Invalidate learning state after message ============
+      await utils.getLearningState.invalidate({
+        fileId,
+        sessionKey,
+      })
+      console.log('🔄 [ChatContext] Invalidated learning state')
+      // ============ END NEW ============
     },
 
     onError: (_, __, context) => {
@@ -226,7 +293,22 @@ export const ChatContextProvider = ({
     setMessage(e.target.value)
   }
 
-  const addMessage = () => sendMessage({ message })
+  const resetSmartCompletion = () => setIsSmartCompletionDetected(false)
+
+  // ============ UPDATED: Pass session key ============
+  const addMessage = (customMessage?: string) => {
+    if (!sessionKey) {
+      console.error('❌ [ChatContext] No session key available!')
+      return
+    }
+    const messageToSend = customMessage || message
+    if (!messageToSend) return
+
+    console.log('📨 [ChatContext] Adding message with session:', sessionKey)
+    sendMessage({ message: messageToSend, sessionKey })
+  }
+  // ============ END UPDATE ============
+  // ============ END UPDATE ============
 
   return (
     <ChatContext.Provider
@@ -235,6 +317,10 @@ export const ChatContextProvider = ({
         message,
         handleInputChange,
         isLoading,
+        sessionKey,
+        isSmartCompletionDetected,
+        resetSmartCompletion,
+        isNewSession,
       }}>
       {children}
     </ChatContext.Provider>

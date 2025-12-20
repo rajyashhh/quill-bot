@@ -1,48 +1,115 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider     = "postgresql"
-  url          = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
-enum UploadStatus {
-  PENDING
-  PROCESSING
-  FAILED
-  SUCCESS
+model QuizAttempt {
+  id              String   @id @default(cuid())
+  fileId          String
+  chapterNumber   Int
+  sessionKey      String
+  score           Int
+  totalQuestions  Int      @default(10)
+  answers         Json
+  weakTopics      String[] @default([])
+  passed          Boolean  @default(false)
+  attemptNumber   Int      @default(1)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  File File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  
+  @@index([fileId, chapterNumber])
+  @@index([sessionKey])
 }
 
+model LearningState {
+  id                 String   @id @default(cuid())
+  fileId             String   
+  sessionKey         String   @unique
+  currentChapter     Int      @default(1)
+  currentTopic       Int      @default(1)
+  learningPhase      String   @default("introduction")
+  chaptersCompleted  Int[]    @default([])
+  quizzesPassed      Int[]    @default([])
+  needsReview        Boolean  @default(false)
+  reviewTopics       String[] @default([])
+  messageCount       Int      @default(0)
+  lastInteraction    DateTime @default(now())
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  
+  File File @relation(fields: [fileId], references: [id], onDelete: Cascade)
+}
 model File {
-  id   String @id @default(cuid())
-  name String
+  id              String            @id @default(cuid())
+  name            String
+  uploadStatus    UploadStatus      @default(PENDING)
+  url             String
+  key             String
 
-  uploadStatus UploadStatus @default(PENDING)
+  usedOCR         Boolean           @default(false)
+  ocrText         String?           @db.Text()
+  isScanned       Boolean           @default(false)
+  ocrCompletedAt  DateTime?
+  ocrProcessed    Boolean           @default(false)
+  ocrProgress     Int?
+  ocrStartedAt    DateTime?
+  processedPages  Int?              @default(0)
+  totalPages      Int?
+  
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
 
-  url      String
-  key      String
-  messages Message[]
-  images   ExtractedImage[]
-  chapters Chapter[]
+  Subject       Subject?          @relation(fields: [subjectId], references: [id])
+  subjectId     String?
 
+  Subfolder     Subfolder?        @relation(fields: [subfolderId], references: [id])
+  subfolderId   String?
+
+  quizAttempts  QuizAttempt[]
+  learningState LearningState[]
+
+  chapters        Chapter[]
+  images          ExtractedImage[]
+  messages        Message[]
+  MessageFeedback MessageFeedback[]
+  QuizQuestion    QuizQuestion[]
+  StudentProgress StudentProgress?
+}
+
+model Subject {
+  id        String   @id @default(cuid())
+  name      String
+  files     File[]
+  subfolders Subfolder[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Subfolder {
+  id        String   @id @default(cuid())
+  name      String
+  subjectId String
+  Subject   Subject  @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  files     File[]
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
 
 model Message {
-  id   String @id @default(cuid())
-  text String @db.Text()
-
-  isUserMessage Boolean
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  File      File?    @relation(fields: [fileId], references: [id])
-  fileId    String?
+  id              String           @id @default(cuid())
+  text            String
+  isUserMessage   Boolean
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  fileId          String?
+  File            File?            @relation(fields: [fileId], references: [id])
+  MessageFeedback MessageFeedback?
 }
 
 model ExtractedImage {
@@ -50,31 +117,29 @@ model ExtractedImage {
   fileId         String
   pageNumber     Int
   imageUrl       String
-  imageKey       String   // UploadThing key for deletion
-  
-  // Context
-  caption        String?  @db.Text()
-  contextBefore  String   @db.Text()
-  contextAfter   String   @db.Text()
-  nearbyText     String   @db.Text() // Combined surrounding text
-  
-  // Position on page
+  imageKey       String
+  caption        String?
+  contextBefore  String
+  contextAfter   String
+  nearbyText     String
   x              Float?
   y              Float?
   width          Float?
   height         Float?
-  
-  // Metadata
-  imageType      String?  // diagram, chart, photo, etc.
-  topics         String[] // Related topics for better search
-  
+  imageType      String?
+  topics         String[]
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
-  
-  // Relations
+  chapter        String?
+  chapterNumber  Int?
+  cloudinaryId   String?
+  imageCount     Int      @default(1)
+  relevanceScore Int      @default(50)
   file           File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
-  
+
   @@index([fileId, pageNumber])
+  @@index([fileId, chapterNumber])
+  @@index([fileId, relevanceScore])
 }
 
 model Chapter {
@@ -82,16 +147,14 @@ model Chapter {
   fileId        String
   chapterNumber Int
   title         String
-  content       String   @db.Text()
+  content       String
   startPage     Int
   endPage       Int
-  topics        Topic[]
-  
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  
   file          File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
-  
+  topics        Topic[]
+
   @@unique([fileId, chapterNumber])
   @@index([fileId])
 }
@@ -101,15 +164,86 @@ model Topic {
   chapterId     String
   topicNumber   Int
   title         String
-  content       String   @db.Text()
-  estimatedTime Int      // in minutes
-  
+  content       String
+  estimatedTime Int
   createdAt     DateTime @default(now())
   updatedAt     DateTime @updatedAt
-  
   chapter       Chapter  @relation(fields: [chapterId], references: [id], onDelete: Cascade)
-  
+
   @@unique([chapterId, topicNumber])
   @@index([chapterId])
 }
 
+model MessageFeedback {
+  id                String            @id @default(cuid())  // CHANGED: Added @default(cuid())
+  messageId         String            @unique
+  fileId            String
+  feedbackType      FeedbackType
+  feedbackReason    String?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt  // CHANGED: Added @updatedAt
+  correctedResponse String?
+  feedbackCategory  FeedbackCategory?
+  File              File              @relation(fields: [fileId], references: [id], onDelete: Cascade)
+  Message           Message           @relation(fields: [messageId], references: [id], onDelete: Cascade)
+
+  @@index([feedbackType])
+  @@index([fileId])
+  @@index([messageId])
+}
+
+model QuizQuestion {
+  id            String   @id @default(cuid())  // CHANGED: Added @default(cuid())
+  fileId        String
+  chapterNumber Int
+  question      String
+  options       Json
+  correctAnswer String
+  explanation   String
+  difficulty    String
+  topicCovered  String 
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt  // CHANGED: Added @updatedAt
+  File          File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([fileId, chapterNumber])
+}
+
+model StudentProgress {
+  id                String   @id @default(cuid())  // CHANGED: Added @default(cuid())
+  fileId            String   @unique
+  currentChapter    Int      @default(1)
+  currentTopic      Int?
+  completedChapters Int[]    @default([])
+  completedTopics   String[] @default([])
+  quizScores        Json     @default("{}")
+  lastInteraction   DateTime @default(now())
+  isFirstTime       Boolean  @default(true)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt  // CHANGED: Added @updatedAt
+  File              File     @relation(fields: [fileId], references: [id], onDelete: Cascade)
+
+  @@index([fileId])
+}
+
+enum UploadStatus {
+  PENDING
+  PROCESSING
+  FAILED
+  SUCCESS
+  PROCESSING_OCR
+  OCR_COMPLETE
+}
+
+enum FeedbackCategory {
+  TOO_COMPLEX
+  INCORRECT_INFO
+  MISSING_CONTEXT
+  OFF_TOPIC
+  OTHER
+}
+
+enum FeedbackType {
+  THUMBS_UP
+  THUMBS_DOWN
+}

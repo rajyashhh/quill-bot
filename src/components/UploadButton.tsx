@@ -16,7 +16,7 @@ import { useToast } from './ui/use-toast'
 import { trpc } from '@/app/_trpc/client'
 import { useRouter } from 'next/navigation'
 
-const UploadDropzone = () => {
+const UploadDropzone = ({ subjectId, subfolderId }: { subjectId?: string | null, subfolderId?: string | null }) => {
   const router = useRouter()
 
   const [isUploading, setIsUploading] =
@@ -25,7 +25,17 @@ const UploadDropzone = () => {
     useState<number>(0)
   const { toast } = useToast()
 
-  const { startUpload } = useUploadThing('freePlanUploader')
+  const { startUpload } = useUploadThing('freePlanUploader', {
+    onClientUploadComplete: () => {
+      // alert("uploaded successfully!");
+    },
+    onUploadError: () => {
+      // alert("error occurred while uploading");
+    },
+    onUploadBegin: () => {
+      // console.log("upload has begun");
+    },
+  })
 
   const { mutate: startPolling } = trpc.getFile.useMutation(
     {
@@ -66,7 +76,7 @@ const UploadDropzone = () => {
         const progressInterval = startSimulatedProgress()
 
         // handle file uploading
-        const res = await startUpload(acceptedFile)
+        const res = await startUpload(acceptedFile, { subjectId, subfolderId })
 
         if (!res) {
           return toast({
@@ -96,7 +106,7 @@ const UploadDropzone = () => {
       onDropRejected={(rejectedFiles) => {
         const [file] = rejectedFiles
         setIsUploading(false)
-        
+
         if (file.file.size > 100 * 1024 * 1024) {
           toast({
             title: 'File too large',
@@ -116,8 +126,7 @@ const UploadDropzone = () => {
           {...getRootProps()}
           className='border h-64 m-4 border-dashed border-gray-300 rounded-lg'>
           <div className='flex items-center justify-center h-full w-full'>
-            <label
-              htmlFor='dropzone-file'
+            <div
               className='flex flex-col items-center justify-center w-full h-full rounded-lg cursor-pointer bg-gray-50 hover:bg-gray-100'>
               <div className='flex flex-col items-center justify-center pt-5 pb-6'>
                 <Cloud className='h-6 w-6 text-zinc-500 mb-2' />
@@ -166,10 +175,9 @@ const UploadDropzone = () => {
               <input
                 {...getInputProps()}
                 type='file'
-                id='dropzone-file'
                 className='hidden'
               />
-            </label>
+            </div>
           </div>
         </div>
       )}
@@ -177,7 +185,7 @@ const UploadDropzone = () => {
   )
 }
 
-const UploadButton = () => {
+const UploadButton = ({ subjectId, subfolderId }: { subjectId?: string | null, subfolderId?: string | null }) => {
   const [isOpen, setIsOpen] = useState<boolean>(false)
 
   return (
@@ -195,7 +203,7 @@ const UploadButton = () => {
       </DialogTrigger>
 
       <DialogContent>
-        <UploadDropzone />
+        <UploadDropzone subjectId={subjectId} subfolderId={subfolderId} />
       </DialogContent>
     </Dialog>
   )
