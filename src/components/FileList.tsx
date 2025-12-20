@@ -1,7 +1,7 @@
 'use client'
 
 import { trpc } from '@/app/_trpc/client'
-import UploadButton from './UploadButton'
+
 import {
     Ghost,
     Loader2,
@@ -16,6 +16,9 @@ import { format } from 'date-fns'
 import { Button } from './ui/button'
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import dynamic from 'next/dynamic'
+
+const UploadButton = dynamic(() => import('./UploadButton'), { ssr: false })
 
 interface FileListProps {
     subjectId?: string | null

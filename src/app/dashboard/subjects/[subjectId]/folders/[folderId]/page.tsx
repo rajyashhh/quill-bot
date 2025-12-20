@@ -3,6 +3,8 @@
 import FileList from '@/components/FileList'
 import { trpc } from '@/app/_trpc/client'
 
+export const dynamic = 'force-dynamic'
+
 interface PageProps {
     params: {
         subjectId: string
