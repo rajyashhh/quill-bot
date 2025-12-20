@@ -4,13 +4,17 @@ import FileList from '@/components/FileList'
 import SubfolderList from '@/components/SubfolderList'
 import { trpc } from '@/app/_trpc/client'
 
+import CreateSubfolderDialog from '@/components/CreateSubfolderDialog'
+
+export const dynamic = 'force-dynamic'
+
 interface PageProps {
     params: {
         subjectId: string
     }
 }
 
-import CreateSubfolderDialog from '@/components/CreateSubfolderDialog'
+
 
 const Page = ({ params }: PageProps) => {
     const { subjectId } = params
