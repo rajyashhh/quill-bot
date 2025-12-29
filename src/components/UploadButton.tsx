@@ -11,7 +11,7 @@ import { Button } from './ui/button'
 import Dropzone from 'react-dropzone'
 import { Cloud, File, Loader2 } from 'lucide-react'
 import { Progress } from './ui/progress'
-import { useUploadThing } from '@/lib/uploadthing'
+
 import { useToast } from './ui/use-toast'
 import { trpc } from '@/app/_trpc/client'
 import { useRouter } from 'next/navigation'
@@ -24,18 +24,6 @@ const UploadDropzone = ({ subjectId, subfolderId }: { subjectId?: string | null,
   const [uploadProgress, setUploadProgress] =
     useState<number>(0)
   const { toast } = useToast()
-
-  const { startUpload } = useUploadThing('freePlanUploader', {
-    onClientUploadComplete: () => {
-      // alert("uploaded successfully!");
-    },
-    onUploadError: () => {
-      // alert("error occurred while uploading");
-    },
-    onUploadBegin: () => {
-      // console.log("upload has begun");
-    },
-  })
 
   const { mutate: startPolling } = trpc.getFile.useMutation(
     {
@@ -63,6 +51,41 @@ const UploadDropzone = ({ subjectId, subfolderId }: { subjectId?: string | null,
     return interval
   }
 
+  const uploadToR2 = async (file: File) => {
+    try {
+      // 1. Get Presigned URL
+      const authRes = await fetch('/api/upload/auth', {
+        method: 'POST',
+        body: JSON.stringify({ fileName: file.name, fileType: file.type }),
+      })
+      if (!authRes.ok) throw new Error('Failed to get upload URL')
+      const { signedUrl, fileKey } = await authRes.json()
+
+      // 2. Upload to R2
+      const uploadRes = await fetch(signedUrl, {
+        method: 'PUT',
+        body: file,
+        headers: {
+          'Content-Type': file.type,
+        },
+      })
+      if (!uploadRes.ok) throw new Error('Failed to upload to storage')
+
+      // 3. Complete Upload & Trigger Processing
+      const completeRes = await fetch('/api/upload/complete', {
+        method: 'POST',
+        body: JSON.stringify({ fileKey, fileName: file.name, subjectId, subfolderId }),
+      })
+      if (!completeRes.ok) throw new Error('Failed to complete processing')
+
+      return { key: fileKey }
+
+    } catch (err: any) {
+      console.error("Upload Error:", err)
+      throw err
+    }
+  }
+
   return (
     <Dropzone
       multiple={false}
@@ -72,36 +95,26 @@ const UploadDropzone = ({ subjectId, subfolderId }: { subjectId?: string | null,
       }}
       onDrop={async (acceptedFile) => {
         setIsUploading(true)
-
         const progressInterval = startSimulatedProgress()
 
         // handle file uploading
-        const res = await startUpload(acceptedFile, { subjectId, subfolderId })
+        try {
+          const file = acceptedFile[0]
+          const { key } = await uploadToR2(file)
 
-        if (!res) {
-          return toast({
-            title: 'Something went wrong',
-            description: 'Please try again later',
+          clearInterval(progressInterval)
+          setUploadProgress(100)
+
+          startPolling({ key })
+        } catch (err: any) {
+          clearInterval(progressInterval)
+          setIsUploading(false)
+          toast({
+            title: 'Upload failed',
+            description: `Error: ${err.message}`,
             variant: 'destructive',
           })
         }
-
-        const [fileResponse] = res
-
-        const key = fileResponse?.key
-
-        if (!key) {
-          return toast({
-            title: 'Something went wrong',
-            description: 'Please try again later',
-            variant: 'destructive',
-          })
-        }
-
-        clearInterval(progressInterval)
-        setUploadProgress(100)
-
-        startPolling({ key })
       }}
       onDropRejected={(rejectedFiles) => {
         const [file] = rejectedFiles

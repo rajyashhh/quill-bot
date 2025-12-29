@@ -148,6 +148,7 @@ export const ourFileRouter = {
   freePlanUploader: f({ pdf: { maxFileSize: '128MB' } })
     .input(z.object({ subjectId: z.string().optional().nullable(), subfolderId: z.string().optional().nullable() }))
     .middleware(async ({ input }) => {
+      console.log("UploadThing Middleware Input:", input);
       return { subjectId: input?.subjectId, subfolderId: input?.subfolderId }
     })
     .onUploadComplete(async ({ metadata, file }) => {
