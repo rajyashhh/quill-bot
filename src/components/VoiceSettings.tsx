@@ -10,7 +10,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from './ui/dropdown-menu'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useCallback } from 'react'
 
 export interface VoiceOption {
   id: string
@@ -72,10 +72,10 @@ export const VoiceSettings = ({ onVoiceChange }: VoiceSettingsProps) => {
   const getSystemVoice = (voiceOption: VoiceOption): SpeechSynthesisVoice | null => {
     // First try exact language match
     let matchingVoices = availableVoices.filter(v => v.lang === voiceOption.lang)
-    
+
     // If no exact match, try language prefix
     if (matchingVoices.length === 0) {
-      matchingVoices = availableVoices.filter(v => 
+      matchingVoices = availableVoices.filter(v =>
         v.lang.startsWith(voiceOption.lang.split('-')[0])
       )
     }
@@ -85,11 +85,11 @@ export const VoiceSettings = ({ onVoiceChange }: VoiceSettingsProps) => {
       // Prioritize Google voices as they tend to have better quality
       if (a.name.includes('Google') && !b.name.includes('Google')) return -1
       if (!a.name.includes('Google') && b.name.includes('Google')) return 1
-      
+
       // Then prioritize Microsoft voices
       if (a.name.includes('Microsoft') && !b.name.includes('Microsoft')) return -1
       if (!a.name.includes('Microsoft') && b.name.includes('Microsoft')) return 1
-      
+
       return 0
     })
 
@@ -97,7 +97,7 @@ export const VoiceSettings = ({ onVoiceChange }: VoiceSettingsProps) => {
     if (voiceOption.gender === 'male') {
       // Common male voice names
       const maleNames = ['David', 'James', 'Mark', 'Paul', 'Daniel', 'George', 'Richard', 'Christopher', 'Brian', 'Guy']
-      const maleVoice = sortedVoices.find(v => 
+      const maleVoice = sortedVoices.find(v =>
         maleNames.some(name => v.name.includes(name)) ||
         v.name.toLowerCase().includes('male')
       )
@@ -105,7 +105,7 @@ export const VoiceSettings = ({ onVoiceChange }: VoiceSettingsProps) => {
     } else {
       // Common female voice names
       const femaleNames = ['Sarah', 'Emma', 'Samantha', 'Victoria', 'Kate', 'Susan', 'Linda', 'Karen', 'Zira', 'Hazel']
-      const femaleVoice = sortedVoices.find(v => 
+      const femaleVoice = sortedVoices.find(v =>
         femaleNames.some(name => v.name.includes(name)) ||
         v.name.toLowerCase().includes('female')
       )
@@ -130,7 +130,7 @@ export const VoiceSettings = ({ onVoiceChange }: VoiceSettingsProps) => {
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuLabel>Select Voice</DropdownMenuLabel>
         <DropdownMenuSeparator />
-        
+
         <div className="space-y-1">
           <div className="px-2 py-1.5 text-xs font-semibold text-muted-foreground">
             Male Voices
@@ -199,27 +199,27 @@ export const useVoiceSettings = () => {
     }
   }, [])
 
-  const getVoiceForSynthesis = (voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null => {
+  const getVoiceForSynthesis = useCallback((voices: SpeechSynthesisVoice[]): SpeechSynthesisVoice | null => {
     const voiceOption = VOICE_OPTIONS.find(v => v.id === selectedVoiceId)
     if (!voiceOption) return voices[0] || null
 
     // Try to find a matching system voice
-    const matchingVoices = voices.filter(v => 
+    const matchingVoices = voices.filter(v =>
       v.lang.startsWith(voiceOption.lang.split('-')[0])
     )
 
-    const genderKeywords = voiceOption.gender === 'male' 
+    const genderKeywords = voiceOption.gender === 'male'
       ? ['male', 'man', 'guy', 'david', 'james', 'daniel', 'george', 'mark', 'paul']
       : ['female', 'woman', 'girl', 'sarah', 'emma', 'samantha', 'victoria', 'kate', 'susan']
 
-    const preferredVoice = matchingVoices.find(v => 
-      genderKeywords.some(keyword => 
+    const preferredVoice = matchingVoices.find(v =>
+      genderKeywords.some(keyword =>
         v.name.toLowerCase().includes(keyword)
       )
     )
 
     return preferredVoice || matchingVoices[0] || voices[0] || null
-  }
+  }, [selectedVoiceId])
 
   return { selectedVoiceId, setSelectedVoiceId, getVoiceForSynthesis }
 }

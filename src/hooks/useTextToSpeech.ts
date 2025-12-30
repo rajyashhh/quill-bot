@@ -49,13 +49,13 @@ export const useTextToSpeech = (): TextToSpeechHook => {
 
       loadVoices()
       window.speechSynthesis.onvoiceschanged = loadVoices
-      
+
       // Cleanup
       return () => {
         window.speechSynthesis.onvoiceschanged = null
       }
     }
-  }, []) // FIXED: Empty dependency array - only run once on mount
+  }, [getVoiceForSynthesis, selectedVoice])
 
   const speak = (text: string) => {
     if (!isSupported || !text) return
