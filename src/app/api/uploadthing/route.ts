@@ -23,6 +23,9 @@ async function downloadFile(url: string, dest: string): Promise<string> {
   });
 }
 
+// Force dynamic to prevent static generation issues during build
+export const dynamic = 'force-dynamic';
+
 export const { GET, POST } = createRouteHandler({
   router: ourFileRouter,
 });

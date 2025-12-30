@@ -23,11 +23,14 @@ const Page = async ({ params }: PageProps) => {
 
   if (!file) notFound()
 
-  // Determine the URL to use. If it's an R2 URL (or if we have a key), generate a presigned URL.
-  // For now, let's assume if there's a key, we should try to get a presigned URL, 
-  // OR if the url includes 'r2.cloudflarestorage.com'.
+  // Determine the URL to use.
+  // Legacy files (UploadThing) have a public URL in file.url
+  // New files (R2) need a presigned URL generated from file.key
   let url = file.url
-  if (file.key) {
+
+  const isLegacyUrl = url?.includes('uploadthing') || url?.includes('utfs.io')
+
+  if (file.key && !isLegacyUrl) {
     try {
       const { getPresignedDownloadUrl } = await import('@/lib/r2')
       url = await getPresignedDownloadUrl(file.key)

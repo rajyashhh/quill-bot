@@ -103,9 +103,12 @@ const onUploadComplete = async ({ metadata, file }: any) => {
       }
     }
 
-    // Chapter-aware indexing (unchanged)
+    // Chapter-aware indexing
+    // Only run this here if we NOT doing OCR. If we are doing OCR, the worker will handle indexing.
     const USE_CHAPTER_AWARE_INDEXING = true
-    if (USE_CHAPTER_AWARE_INDEXING) {
+    const needsOCR = shouldUseOCR(extractedText, totalPages)
+
+    if (USE_CHAPTER_AWARE_INDEXING && !needsOCR) {
       const chapterIndexer = new ChapterAwarePineconeIndexer()
       const { chapters, vectors } = await chapterIndexer.indexPDFWithChapters(
         createdFile.id, buffer, 1000, 200
@@ -129,12 +132,16 @@ const onUploadComplete = async ({ metadata, file }: any) => {
         })
       }
       console.log(`[PDF_PROCESSING] Indexed ${vectors} vectors with chapter awareness`)
+    } else if (needsOCR) {
+      console.log(`[PDF_PROCESSING] Skipping immediate indexing because OCR is required. Worker will handle it.`)
     }
 
-    await db.file.update({
-      data: { uploadStatus: 'SUCCESS' },
-      where: { id: createdFile.id },
-    })
+    if (!needsOCR) {
+      await db.file.update({
+        data: { uploadStatus: 'SUCCESS' },
+        where: { id: createdFile.id },
+      })
+    }
   } catch (err: any) {
     console.error('[PDF_PROCESSING_ERROR]', err)
     await db.file.update({
@@ -237,9 +244,12 @@ export const ourFileRouter = {
           }
         }
 
-        // Chapter-aware indexing (unchanged)
+        // Chapter-aware indexing
+        // Only run this here if we NOT doing OCR. If we are doing OCR, the worker will handle indexing.
         const USE_CHAPTER_AWARE_INDEXING = true
-        if (USE_CHAPTER_AWARE_INDEXING) {
+        const needsOCR = shouldUseOCR(extractedText, totalPages)
+
+        if (USE_CHAPTER_AWARE_INDEXING && !needsOCR) {
           const chapterIndexer = new ChapterAwarePineconeIndexer()
           const { chapters, vectors } = await chapterIndexer.indexPDFWithChapters(
             createdFile.id, buffer, 1000, 200
@@ -263,12 +273,16 @@ export const ourFileRouter = {
             })
           }
           console.log(`[PDF_PROCESSING] Indexed ${vectors} vectors with chapter awareness`)
+        } else if (needsOCR) {
+          console.log(`[PDF_PROCESSING] Skipping immediate indexing because OCR is required. Worker will handle it.`)
         }
 
-        await db.file.update({
-          data: { uploadStatus: 'SUCCESS' },
-          where: { id: createdFile.id },
-        })
+        if (!needsOCR) {
+          await db.file.update({
+            data: { uploadStatus: 'SUCCESS' },
+            where: { id: createdFile.id },
+          })
+        }
       } catch (err: any) {
         console.error('[PDF_PROCESSING_ERROR]', err)
         await db.file.update({

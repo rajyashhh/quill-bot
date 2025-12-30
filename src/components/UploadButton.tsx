@@ -28,7 +28,24 @@ const UploadDropzone = ({ subjectId, subfolderId }: { subjectId?: string | null,
   const { mutate: startPolling } = trpc.getFile.useMutation(
     {
       onSuccess: (file) => {
-        router.push(`/dashboard/${file.id}`)
+        if (file.uploadStatus === 'SUCCESS') {
+          router.push(`/dashboard/${file.id}`)
+        } else if (file.uploadStatus === 'FAILED') {
+          toast({
+            title: 'Upload failed',
+            description: 'Something went wrong during processing',
+            variant: 'destructive',
+          })
+        } else {
+          // Still processing, force a retry by throwing (or just rely on the interval if using useQuery, but here it is mutation)
+          // Actually, useMutation doesn't auto-retry on success. We need to implement manual polling loop here.
+          // However, trpc query with retry: true is better. But existing code uses mutation.
+
+          // Simple fix: Recursive call after delay if PROCESSING
+          setTimeout(() => {
+            startPolling({ key: file.key })
+          }, 1000)
+        }
       },
       retry: true,
       retryDelay: 500,
